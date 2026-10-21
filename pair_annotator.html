@@ -336,17 +336,17 @@
             overflow: hidden;
         }
 
-        .msg.modified .ta-wrap {
-            background: var(--modified-bg);
-        }
-
-        .cur-match {
-            box-shadow: inset 0 0 0 2px var(--warn);
+        .ta-wrap mark.d {
+            background: #bbf7d0;
         }
 
         .sys-body mark {
             background: #fde68a;
             border-radius: 2px;
+        }
+
+        .cur-match .hl mark {
+            background: #fdba74;
         }
 
         mark,
@@ -670,7 +670,7 @@
             if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
             wrap.classList.toggle('modified', isMod);
             const hl = wrap.querySelector('.backdrop .hl');
-            if (hl) hl.innerHTML = search.q ? highlightHTML(ta.value, search.q) : '';
+            if (hl) hl.innerHTML = renderBackdropHTML(ta.value, orig, search.q);
             refreshSidebarItem(ci);
             updateProgress();
             scheduleSave();
@@ -697,6 +697,41 @@
             }
             return out + escapeHTML(text.slice(last)) + ' ';
         }
+        // 逐字对比原文与当前文本，返回当前文本中改动区间的 [start, end)
+        function diffSpan(orig, cur) {
+            let s = 0;
+            const minLen = Math.min(orig.length, cur.length);
+            while (s < minLen && orig[s] === cur[s]) s++;
+            let e = cur.length, o = orig.length;
+            while (e > s && o > s && orig[o - 1] === cur[e - 1]) { e--; o--; }
+            return [s, e];
+        }
+        // 生成背景层高亮：改动文字绿色（mark.d），搜索命中黄色（mark），重叠时搜索优先
+        function renderBackdropHTML(text, orig, q) {
+            const cover = new Array(text.length).fill(null);
+            if (orig !== undefined && orig !== text) {
+                const [s, e] = diffSpan(orig, text);
+                for (let i = s; i < e; i++) cover[i] = 'd';
+            }
+            if (q) {
+                const re = new RegExp(escapeRegExp(q), 'gi');
+                let m;
+                while ((m = re.exec(text))) {
+                    for (let i = m.index; i < m.index + m[0].length; i++) cover[i] = 's';
+                    if (m[0].length === 0) re.lastIndex++;
+                }
+            }
+            let out = '', i = 0;
+            while (i < text.length) {
+                const t = cover[i];
+                let j = i;
+                while (j < text.length && cover[j] === t) j++;
+                const seg = escapeHTML(text.slice(i, j));
+                out += t === 's' ? '<mark>' + seg + '</mark>' : t === 'd' ? '<mark class="d">' + seg + '</mark>' : seg;
+                i = j;
+            }
+            return out + ' ';
+        }
         function refreshHighlights() {
             if (!state.data || state.current < 0) return;
             const q = search.q;
@@ -709,7 +744,10 @@
             $('main').querySelectorAll('.msg').forEach(wrap => {
                 const ta = wrap.querySelector('textarea');
                 const hl = wrap.querySelector('.backdrop .hl');
-                if (ta && hl) { hl.innerHTML = q ? highlightHTML(ta.value, q) : ''; }
+                if (ta && hl) {
+                    const [ci, mi] = wrap.dataset.key.split(':').map(Number);
+                    hl.innerHTML = renderBackdropHTML(ta.value, state.data[ci].messages[mi].content, q);
+                }
             });
         }
         function updateMatchUI() {
