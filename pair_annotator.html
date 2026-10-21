@@ -349,6 +349,11 @@
             border-radius: 2px;
         }
 
+        mark,
+        [data-key] {
+            scroll-margin-top: 4rem;
+        }
+
         .msg .mod-badge {
             display: none;
         }
@@ -751,10 +756,20 @@
             if (!sameConv) selectConv(ci);
             clearCurMatch();
             const target = $('main').querySelector(`[data-key="${ci}:${mi}"]`);
-            if (target) {
-                target.classList.add('cur-match');
-                target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (!target) { updateMatchUI(); return; }
+            target.classList.add('cur-match');
+            // 命中在折叠的 system 里时先展开，确保高亮可见
+            if (mi === 0) {
+                const sysBody = target.querySelector('.sys-body');
+                const toggle = target.querySelector('.sys-head .link');
+                if (sysBody && !sysBody.classList.contains('expanded')) {
+                    sysBody.classList.add('expanded');
+                    if (toggle) toggle.textContent = '收起';
+                }
             }
+            // 直接滚动到高亮句本身（而不是整条消息），固定显示在搜索栏下方
+            const mark = target.querySelector('.hl mark') || target.querySelector('.sys-body mark') || target;
+            mark.scrollIntoView({ block: 'start', behavior: 'auto' });
             updateMatchUI();
             const si = $('mainSearch');
             if (si && document.activeElement !== si) {
