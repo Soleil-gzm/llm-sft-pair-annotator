@@ -275,6 +275,93 @@
             text-align: center;
         }
 
+        /* 批量替换区域（在搜索栏右侧展开） */
+        .replace-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-left: 8px;
+        }
+
+        .replace-group input {
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 3px 7px;
+            font-size: .8rem;
+            width: 160px;
+        }
+
+        .replace-group button {
+            padding: 3px 8px;
+            font-size: .78rem;
+        }
+
+        .replace-group .btn-replace {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .replace-group .btn-undo {
+            background: #fff;
+            color: #b91c1c;
+            border: 1px solid #fecaca;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .replace-group .btn-undo:disabled {
+            color: #d1d5db;
+            border-color: #e5e7eb;
+            cursor: not-allowed;
+        }
+
+        /* 批量替换预览弹窗 */
+        .modal-preview {
+            max-height: 50vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            font-size: .82rem;
+            line-height: 1.55;
+        }
+
+        .modal-preview .diff-item {
+            padding: 6px 0;
+            border-bottom: 1px dashed var(--border);
+        }
+
+        .modal-preview .diff-item:last-child {
+            border-bottom: none;
+        }
+
+        .modal-preview .diff-key {
+            color: var(--muted);
+            font-size: .72rem;
+            margin-bottom: 2px;
+        }
+
+        .modal-preview .old {
+            color: #b91c1c;
+            text-decoration: line-through;
+        }
+
+        .modal-preview .sep {
+            color: var(--muted);
+            margin: 0 6px;
+        }
+
+        .modal-preview .new {
+            color: #047857;
+            background: #d1fae5;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+
         .sys-card,
         .turn {
             background: var(--card);
@@ -484,12 +571,26 @@
         </div>
     </div>
 
+    <!-- 批量替换预览确认弹窗 -->
+    <div id="replaceModal" class="modal-mask" hidden>
+        <div class="modal" style="width: 460px;">
+            <h3>批量替换预览</h3>
+            <p class="modal-tip" id="replaceSummary"></p>
+            <div id="replacePreview" class="modal-preview"></div>
+            <div class="modal-actions">
+                <button id="replaceCancel" class="secondary">取消</button>
+                <button id="replaceOk">确认替换</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
             edits: new Map(),   // "convIdx:msgIdx" -> 修改后的 content
             current: -1,
             searchText: null,   // 每会话小写检索串，首次搜索时构建
+            lastBatch: null,    // 上一次批量替换的 undo 记录：{ edits: [ [key, oldContent], ... ] }
         };
 
         // 主区域话术高亮搜索状态：q 为关键词，matches 为 [{ci, mi}]，cur 为当前匹配下标
@@ -576,7 +677,9 @@
             return n;
         }
         function buildSearchText() {
-            state.searchText = state.data.map(c => c.messages.map(m => m.content).join('\n').toLowerCase());
+            state.searchText = state.data.map((c, ci) =>
+                c.messages.map((m, mi) => currentContentOf(ci, mi)).join('\n').toLowerCase()
+            );
         }
         function renderSidebar() {
             const list = $('convList');
@@ -653,6 +756,17 @@
             btnDown.addEventListener('click', () => jumpToMatch(search.cur + 1));
             const cnt = el('span', 'count'); cnt.id = 'matchCount';
             sg.append(si, btnUp, btnDown, cnt);
+            // 批量替换区域（和搜索关键词 q 联动）
+            const rg = el('div', 'replace-group');
+            const ri = el('input'); ri.id = 'replaceInput'; ri.placeholder = '替换为';
+            ri.addEventListener('keydown', e => { if (e.key === 'Enter') doBatchReplace(); });
+            const bRep = el('button', 'btn-replace'); bRep.textContent = '批量替换';
+            bRep.addEventListener('click', doBatchReplace);
+            const bUndo = el('button', 'btn-undo'); bUndo.textContent = '↶ 撤销上一批';
+            bUndo.disabled = !state.lastBatch;
+            bUndo.addEventListener('click', undoLastBatch);
+            rg.append(ri, bRep, bUndo);
+            sg.append(rg);
 
             const btnPrev = el('button'); btnPrev.textContent = '← 上一条'; btnPrev.disabled = ci === 0;
             btnPrev.addEventListener('click', () => selectConv(ci - 1));
@@ -836,10 +950,116 @@
             const lq = q.toLowerCase();
             state.data.forEach((conv, ci) => {
                 conv.messages.forEach((m, mi) => {
-                    if (m.content.toLowerCase().includes(lq)) res.push({ ci, mi });
+                    if (currentContentOf(ci, mi).toLowerCase().includes(lq)) res.push({ ci, mi });
                 });
             });
             return res;
+        }
+
+        /* ---------- 批量替换（基于当前搜索关键词 q） ---------- */
+        function currentContentOf(ci, mi) {
+            const k = keyOf(ci, mi);
+            if (state.edits.has(k)) return state.edits.get(k);
+            return state.data[ci].messages[mi].content;
+        }
+        // 扫描将被批量替换的条目（跳过 system）
+        function scanBatchReplace(q, replacement) {
+            const result = [];  // [ { ci, mi, old, new } ]
+            if (!q || !state.data) return result;
+            state.data.forEach((conv, ci) => {
+                conv.messages.forEach((m, mi) => {
+                    if (m.role === 'system') return;
+                    const old = currentContentOf(ci, mi);
+                    if (old.indexOf(q) === -1) return;
+                    const rep = old.split(q).join(replacement);
+                    if (rep !== old) result.push({ ci, mi, old, new: rep });
+                });
+            });
+            return result;
+        }
+        let batchPending = null;   // 等待用户确认的批量替换结果
+        function flashMsg(text) {
+            const t = $('progressText'); const old = t.textContent;
+            t.textContent = text; setTimeout(() => { t.textContent = old; }, 2200);
+        }
+        function doBatchReplace() {
+            const q = search.q;
+            const replacement = $('replaceInput') ? $('replaceInput').value : '';
+            if (!q) { flashMsg('请先在搜索框输入要查找的关键词/短句'); return; }
+            if (replacement === '') { flashMsg('请在「替换为」框里填新内容'); return; }
+            const hits = scanBatchReplace(q, replacement);
+            if (!hits.length) { flashMsg('当前关键词在所有 user/assistant 消息中没有匹配'); return; }
+            // 生成预览
+            const convIds = new Set(hits.map(h => h.ci));
+            const summary = `关键词「${q}」 → 替换为「${replacement}」\n影响 ${convIds.size} 条会话，共 ${hits.length} 处将被替换`;
+            $('replaceSummary').textContent = summary;
+            const pv = $('replacePreview');
+            const show = hits.slice(0, 3);
+            pv.innerHTML = show.map(h => {
+                const oldShort = h.old.length > 60 ? h.old.slice(0, 57) + '…' : h.old;
+                const newShort = h.new.length > 60 ? h.new.slice(0, 57) + '…' : h.new;
+                return `<div class="diff-item"><div class="diff-key">会话 #${h.ci} · 消息 ${h.mi}</div>` +
+                    `<div><span class="old"></span>${escapeHTML(oldShort)}</div>` +
+                    `<div><span class="sep">→</span><span class="new">${escapeHTML(newShort)}</span></div></div>`;
+            }).join('');
+            if (hits.length > 3) pv.innerHTML += `<p class="modal-tip" style="margin-top:8px">（仅展示前 3 条，还有 ${hits.length - 3} 处未列出）</p>`;
+            batchPending = { q, replacement, hits };
+            $('replaceModal').hidden = false;
+        }
+        $('replaceOk') && $('replaceOk').addEventListener('click', () => {
+            if (!batchPending) return;
+            const { hits } = batchPending;
+            const undoEntries = [];
+            hits.forEach(({ ci, mi, old, new: rep }) => {
+                const k = keyOf(ci, mi);
+                // 旧内容（用来 undo）：如果 edits 里已经存了值，undo 前的"原值"就是那个值
+                const had = state.edits.has(k);
+                if (rep === state.data[ci].messages[mi].content) {
+                    // 替换后等于原始内容 → 从 edits 里移除，恢复到原始
+                    state.edits.delete(k);
+                } else {
+                    state.edits.set(k, rep);
+                }
+                undoEntries.push([k, old, had]);  // undo: 恢复到 old；had=true 表示之前有 edits
+            });
+            state.lastBatch = undoEntries;
+            batchPending = null;
+            $('replaceModal').hidden = true;
+            refreshAfterBatch();
+        });
+        $('replaceCancel') && $('replaceCancel').addEventListener('click', () => {
+            batchPending = null;
+            $('replaceModal').hidden = true;
+        });
+        function undoLastBatch() {
+            if (!state.lastBatch) return;
+            state.lastBatch.forEach(([k, old, had]) => {
+                const [ci, mi] = k.split(':').map(Number);
+                const orig = state.data[ci].messages[mi].content;
+                if (old === orig) {
+                    state.edits.delete(k);
+                } else {
+                    state.edits.set(k, old);
+                }
+            });
+            state.lastBatch = null;
+            refreshAfterBatch();
+        }
+        function refreshAfterBatch() {
+            if (state.current < 0) state.current = 0;
+            renderMain();
+            buildSearchText();
+            search.matches = computeMatches(search.q);
+            search.cur = search.matches.length ? 0 : -1;
+            refreshHighlights();
+            updateMatchUI();
+            updateProgress();
+            // 刷新受影响会话的侧栏徽标
+            const affected = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0])));
+            affected.forEach(ci => refreshSidebarItem(ci));
+            const b = document.querySelector('.btn-undo');
+            if (b) b.disabled = !state.lastBatch;
+            scheduleSave();
         }
         function doSearch(mode) {
             const si = $('mainSearch');
