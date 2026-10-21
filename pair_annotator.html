@@ -86,6 +86,52 @@
             border: 1px solid var(--border);
         }
 
+        /* 标注人弹窗（内嵌实现，避免浏览器拦截原生 prompt） */
+        .modal-mask {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, .35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+
+        .modal {
+            background: #fff;
+            border-radius: 8px;
+            padding: 18px 20px;
+            width: 300px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
+        }
+
+        .modal h3 {
+            font-size: .95rem;
+            margin-bottom: 4px;
+        }
+
+        .modal-tip {
+            font-size: .78rem;
+            color: var(--muted);
+            margin-bottom: 10px;
+        }
+
+        .modal input {
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 6px 9px;
+            font-size: .88rem;
+            margin-bottom: 12px;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
         .layout {
             flex: 1;
             display: flex;
@@ -420,6 +466,19 @@
     </div>
     <input type="file" id="fileInput" accept=".json" hidden>
     <input type="file" id="patchInput" accept=".json" hidden>
+
+    <!-- 标注人署名弹窗 -->
+    <div id="annotatorModal" class="modal-mask" hidden>
+        <div class="modal">
+            <h3>填写标注人</h3>
+            <p class="modal-tip">姓名/工号将写入补丁文件名，便于追溯；只需填写一次</p>
+            <input id="annotatorInput" type="text" placeholder="如：张三" maxlength="20">
+            <div class="modal-actions">
+                <button id="annotatorCancel" class="secondary">取消</button>
+                <button id="annotatorOk">确定</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         const state = {
@@ -828,28 +887,39 @@
             }
         }
 
-        /* ---------- 标注人署名 ---------- */
+        /* ---------- 标注人署名（内嵌弹窗，避免浏览器拦截原生 prompt/alert） ---------- */
+        let annotatorCallback = null;
         function getAnnotator() { return localStorage.getItem('pair_annotator_annotator') || ''; }
         function sanitizeName(s) { return s.trim().replace(/[\\/:*?"<>|\s]+/g, '_'); }
         function updateAnnotatorUI() {
-            const n = getAnnotator();
-            $('btnAnnotator').textContent = '标注人：' + (n || '未设置');
+            $('btnAnnotator').textContent = '标注人：' + (getAnnotator() || '未设置');
         }
-        function ensureAnnotator() {
-            const cur = getAnnotator();
-            if (cur) return cur;
-            const input = prompt('首次导出前请输入你的姓名或工号（会写入补丁文件名）：');
-            if (!input || !input.trim()) { alert('未设置标注人，已取消导出'); return ''; }
-            const n = sanitizeName(input);
+        function openAnnotatorModal(cb) {
+            annotatorCallback = cb || null;
+            $('annotatorInput').value = getAnnotator();
+            $('annotatorModal').hidden = false;
+            $('annotatorInput').focus();
+        }
+        function closeAnnotatorModal() { $('annotatorModal').hidden = true; annotatorCallback = null; }
+        $('annotatorOk').addEventListener('click', () => {
+            const n = sanitizeName($('annotatorInput').value);
+            if (!n) { $('annotatorInput').focus(); return; }
             localStorage.setItem('pair_annotator_annotator', n);
             updateAnnotatorUI();
-            return n;
-        }
+            const cb = annotatorCallback;
+            closeAnnotatorModal();
+            if (cb) cb();
+        });
+        $('annotatorCancel').addEventListener('click', closeAnnotatorModal);
+        $('annotatorInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') $('annotatorOk').click();
+            if (e.key === 'Escape') closeAnnotatorModal();
+        });
 
         /* ---------- 导入 / 导出补丁 ---------- */
         function exportPatch() {
-            const annotator = ensureAnnotator();
-            if (!annotator) return;
+            if (!getAnnotator()) { openAnnotatorModal(exportPatch); return; }
+            const annotator = getAnnotator();
             const edits = [...state.edits.entries()].map(([k, content]) => {
                 const [ci, mi] = k.split(':').map(Number);
                 return { conv_idx: ci, msg_idx: mi, content };
@@ -917,13 +987,7 @@
             e.target.value = '';
         });
         $('btnExport').addEventListener('click', exportPatch);
-        $('btnAnnotator').addEventListener('click', () => {
-            const input = prompt('修改标注人（姓名/工号）：', getAnnotator());
-            if (input && input.trim()) {
-                localStorage.setItem('pair_annotator_annotator', sanitizeName(input));
-                updateAnnotatorUI();
-            }
-        });
+        $('btnAnnotator').addEventListener('click', () => openAnnotatorModal(null));
         updateAnnotatorUI();
         $('btnImport').addEventListener('click', () => $('patchInput').click());
         $('patchInput').addEventListener('change', e => {
