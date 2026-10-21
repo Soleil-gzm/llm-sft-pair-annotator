@@ -1158,7 +1158,8 @@
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
             const fname = `patch_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
-            // 优先弹系统"另存为"对话框让标注人员选保存位置（Chrome/Edge）；取消则不动作，失败回退普通下载
+
+            // 优先弹系统"另存为"对话框
             if (window.showSaveFilePicker) {
                 try {
                     const handle = await window.showSaveFilePicker({
@@ -1168,11 +1169,17 @@
                     const w = await handle.createWritable();
                     await w.write(blob);
                     await w.close();
-                    return;
                 } catch (err) {
-                    if (err && err.name === 'AbortError') return;
+                    // 如果用户主动取消（AbortError），静默返回；如果是其他错误，提示用户。
+                    // 无论如何，不要再往下走，防止触发二次弹窗。
+                    if (err && err.name !== 'AbortError') {
+                        alert('保存失败：' + err.message + '\n建议检查浏览器设置或手动将内容复制保存。');
+                    }
                 }
+                return; // 核心：调用过新 API 后，无论如何都直接结束
             }
+
+            // 回退方案：仅针对不支持 showSaveFilePicker 的老旧浏览器（如 Firefox）
             const a = el('a');
             a.href = URL.createObjectURL(blob);
             a.download = fname;
