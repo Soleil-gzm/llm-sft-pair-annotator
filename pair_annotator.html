@@ -80,6 +80,12 @@
             font-size: .78rem;
         }
 
+        button.secondary {
+            background: #fff;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
         .layout {
             flex: 1;
             display: flex;
@@ -392,6 +398,7 @@
     <header>
         <h1>话术微调标注</h1>
         <span id="progressText">未加载数据</span>
+        <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
         <button id="btnImport" disabled>导入补丁</button>
         <button id="btnExport" disabled>导出补丁</button>
@@ -416,7 +423,7 @@
 
     <script>
         const state = {
-            data: null, fileName: '', totalMsgs: 0,
+            data: null, fileName: '', totalMsgs: 0, dataSig: '',
             edits: new Map(),   // "convIdx:msgIdx" -> 修改后的 content
             current: -1,
             searchText: null,   // 每会话小写检索串，首次搜索时构建
@@ -466,6 +473,11 @@
             state.data = data;
             state.fileName = fileName;
             state.totalMsgs = data.reduce((s, c) => s + c.messages.length, 0);
+            // 数据指纹：会话数:消息总数:首条system字符数:末条消息字符数（合并脚本用同规则校验）
+            const sysLen = data.length && data[0].messages.length ? data[0].messages[0].content.length : 0;
+            const lastMsgs = data.length ? data[data.length - 1].messages : [];
+            const lastLen = lastMsgs.length ? lastMsgs[lastMsgs.length - 1].content.length : 0;
+            state.dataSig = `${data.length}:${state.totalMsgs}:${sysLen}:${lastLen}`;
             state.edits = new Map();
             state.current = -1;
             state.searchText = null;
@@ -816,14 +828,36 @@
             }
         }
 
+        /* ---------- 标注人署名 ---------- */
+        function getAnnotator() { return localStorage.getItem('pair_annotator_annotator') || ''; }
+        function sanitizeName(s) { return s.trim().replace(/[\\/:*?"<>|\s]+/g, '_'); }
+        function updateAnnotatorUI() {
+            const n = getAnnotator();
+            $('btnAnnotator').textContent = '标注人：' + (n || '未设置');
+        }
+        function ensureAnnotator() {
+            const cur = getAnnotator();
+            if (cur) return cur;
+            const input = prompt('首次导出前请输入你的姓名或工号（会写入补丁文件名）：');
+            if (!input || !input.trim()) { alert('未设置标注人，已取消导出'); return ''; }
+            const n = sanitizeName(input);
+            localStorage.setItem('pair_annotator_annotator', n);
+            updateAnnotatorUI();
+            return n;
+        }
+
         /* ---------- 导入 / 导出补丁 ---------- */
         function exportPatch() {
+            const annotator = ensureAnnotator();
+            if (!annotator) return;
             const edits = [...state.edits.entries()].map(([k, content]) => {
                 const [ci, mi] = k.split(':').map(Number);
                 return { conv_idx: ci, msg_idx: mi, content };
             }).sort((a, b) => a.conv_idx - b.conv_idx || a.msg_idx - b.msg_idx);
             const payload = {
                 source: state.fileName,
+                data_sig: state.dataSig,
+                annotator,
                 exported_at: new Date().toISOString(),
                 edit_count: edits.length,
                 edits,
@@ -831,8 +865,10 @@
             const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
             const a = el('a');
             a.href = URL.createObjectURL(blob);
-            const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-            a.download = `edits_${state.fileName.replace(/\.json$/i, '')}_${ts}.json`;
+            const d = new Date();
+            const p2 = n => String(n).padStart(2, '0');
+            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+            a.download = `patch_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
             a.click();
             URL.revokeObjectURL(a.href);
         }
@@ -881,6 +917,14 @@
             e.target.value = '';
         });
         $('btnExport').addEventListener('click', exportPatch);
+        $('btnAnnotator').addEventListener('click', () => {
+            const input = prompt('修改标注人（姓名/工号）：', getAnnotator());
+            if (input && input.trim()) {
+                localStorage.setItem('pair_annotator_annotator', sanitizeName(input));
+                updateAnnotatorUI();
+            }
+        });
+        updateAnnotatorUI();
         $('btnImport').addEventListener('click', () => $('patchInput').click());
         $('patchInput').addEventListener('change', e => {
             const f = e.target.files[0];
