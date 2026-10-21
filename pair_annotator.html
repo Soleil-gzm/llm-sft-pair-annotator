@@ -805,9 +805,9 @@
                     if (toggle) toggle.textContent = '收起';
                 }
             }
-            // 直接滚动到高亮句本身（而不是整条消息），固定显示在搜索栏下方
+            // 直接滚动到高亮句本身（而不是整条消息），居中显示确保一眼可见
             const mark = target.querySelector('.hl mark') || target.querySelector('.sys-body mark') || target;
-            mark.scrollIntoView({ block: 'start', behavior: 'auto' });
+            mark.scrollIntoView({ block: 'center', behavior: 'auto' });
             updateMatchUI();
             const si = $('mainSearch');
             if (si && document.activeElement !== si) {
