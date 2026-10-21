@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>话术微调标注工具</title>
+    <style>
+        :root {
+            --primary: #4f46e5;
+            --border: #e5e7eb;
+            --bg: #f9fafb;
+            --card: #ffffff;
+            --text: #111827;
+            --text2: #6b7280;
+            --user: #2563eb;
+            --asst: #059669;
+            --warn: #f59e0b;
+            --modified-bg: #fffbeb;
+        }
+
+        * {
+            margin: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: .55rem 1rem;
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        header h1 {
+            font-size: 1.05rem;
+            white-space: nowrap;
+        }
+
+        #progressText {
+            flex: 1;
+            font-size: .85rem;
+            color: var(--text2);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        button {
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: .42rem .9rem;
+            cursor: pointer;
+            font-size: .85rem;
+            white-space: nowrap;
+        }
+
+        button:disabled {
+            opacity: .4;
+            cursor: not-allowed;
+        }
+
+        button.link {
+            background: none;
+            color: var(--primary);
+            padding: 0;
+            font-size: .78rem;
+        }
+
+        .layout {
+            flex: 1;
+            display: flex;
+            min-height: 0;
+        }
+
+        aside {
+            width: 270px;
+            border-right: 1px solid var(--border);
+            background: var(--card);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .side-tools {
+            padding: .6rem;
+            display: flex;
+            gap: .4rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .side-tools select {
+            flex: 1;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: .85rem;
+            background: #fff;
+        }
+
+        .conv-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .conv-item {
+            padding: .5rem .7rem;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+        }
+
+        .conv-item:hover {
+            background: var(--bg);
+        }
+
+        .conv-item.active {
+            background: #eef2ff;
+            border-left: 3px solid var(--primary);
+        }
+
+        .conv-item .meta {
+            font-size: .75rem;
+            color: var(--text2);
+            display: flex;
+            gap: .45rem;
+            align-items: center;
+        }
+
+        .conv-item .preview {
+            font-size: .8rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text);
+            margin-top: .15rem;
+        }
+
+        .badge {
+            background: var(--warn);
+            color: #fff;
+            border-radius: 8px;
+            font-size: .7rem;
+            padding: 0 .35rem;
+        }
+
+        .badge.gray {
+            background: var(--text2);
+        }
+
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem 1.5rem 3rem;
+        }
+
+        .empty {
+            color: var(--text2);
+            text-align: center;
+            margin-top: 4rem;
+            line-height: 2;
+        }
+
+        .conv-header {
+            display: flex;
+            align-items: center;
+            gap: .8rem;
+            margin-bottom: .9rem;
+            flex-wrap: wrap;
+            position: sticky;
+            top: -1rem;
+            background: var(--bg);
+            padding: .5rem 0;
+            z-index: 10;
+        }
+
+        .conv-header .title {
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .conv-header button {
+            padding: .3rem .7rem;
+            font-size: .8rem;
+        }
+
+        .search-group {
+            display: flex;
+            align-items: center;
+            gap: .35rem;
+        }
+
+        .search-group input {
+            padding: .3rem .55rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: .85rem;
+            width: 220px;
+        }
+
+        .search-group button {
+            padding: .3rem .55rem;
+        }
+
+        .search-group .count {
+            font-size: .78rem;
+            color: var(--text2);
+            min-width: 3.5em;
+            text-align: center;
+        }
+
+        .sys-card,
+        .turn {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: .9rem;
+            overflow: hidden;
+        }
+
+        .sys-head,
+        .turn-head {
+            padding: .4rem .8rem;
+            font-size: .8rem;
+            color: var(--text2);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: .5rem;
+            align-items: center;
+        }
+
+        .sys-body {
+            padding: .6rem .8rem;
+            white-space: pre-wrap;
+            font-size: .85rem;
+            color: var(--text2);
+            max-height: 5.6em;
+            overflow: hidden;
+        }
+
+        .sys-body.expanded {
+            max-height: none;
+        }
+
+        .lock {
+            font-size: .75rem;
+        }
+
+        .msg {
+            border-top: 1px solid var(--border);
+        }
+
+        .msg:first-child {
+            border-top: none;
+        }
+
+        .msg-head {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            padding: .4rem .8rem 0;
+            font-size: .78rem;
+            color: var(--text2);
+        }
+
+        .msg-head .spacer {
+            flex: 1;
+        }
+
+        .role {
+            font-weight: 600;
+            padding: .05rem .45rem;
+            border-radius: 6px;
+            color: #fff;
+            font-size: .72rem;
+        }
+
+        .role.user {
+            background: var(--user);
+        }
+
+        .role.assistant {
+            background: var(--asst);
+        }
+
+        .role.other {
+            background: var(--text2);
+        }
+
+        .ta-wrap {
+            position: relative;
+        }
+
+        .ta-wrap .backdrop {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+            padding: .35rem .8rem .7rem;
+            font: inherit;
+            font-size: .9rem;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            color: transparent;
+        }
+
+        .ta-wrap mark {
+            background: #fde68a;
+            border-radius: 2px;
+        }
+
+        .msg textarea {
+            position: relative;
+            display: block;
+            width: 100%;
+            border: none;
+            resize: none;
+            outline: none;
+            padding: .35rem .8rem .7rem;
+            font: inherit;
+            font-size: .9rem;
+            line-height: 1.55;
+            background: transparent;
+            overflow: hidden;
+        }
+
+        .msg.modified .ta-wrap {
+            background: var(--modified-bg);
+        }
+
+        .cur-match {
+            box-shadow: inset 0 0 0 2px var(--warn);
+        }
+
+        .sys-body mark {
+            background: #fde68a;
+            border-radius: 2px;
+        }
+
+        .msg .mod-badge {
+            display: none;
+        }
+
+        .msg.modified .mod-badge {
+            display: inline;
+        }
+
+        .msg .only-mod {
+            visibility: hidden;
+        }
+
+        .msg.modified .only-mod {
+            visibility: visible;
+        }
+
+        .orig {
+            display: none;
+            margin: 0 .8rem .7rem;
+            padding: .5rem .7rem;
+            background: var(--bg);
+            border: 1px dashed var(--border);
+            border-radius: 6px;
+            font-size: .8rem;
+            color: var(--text2);
+            white-space: pre-wrap;
+        }
+
+        .orig.show {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>话术微调标注</h1>
+        <span id="progressText">未加载数据</span>
+        <button id="btnOpen">打开数据文件</button>
+        <button id="btnImport" disabled>导入补丁</button>
+        <button id="btnExport" disabled>导出补丁</button>
+    </header>
+    <div class="layout">
+        <aside>
+            <div class="side-tools">
+                <select id="filter" disabled>
+                    <option value="all">全部</option>
+                    <option value="modified">已修改</option>
+                    <option value="unmodified">未修改</option>
+                </select>
+            </div>
+            <div id="convList" class="conv-list"></div>
+        </aside>
+        <main id="main">
+            <div class="empty">请点击右上角「打开数据文件」加载原始对话 JSON<br>或通过 URL 参数 ?data=文件名.json 自动加载</div>
+        </main>
+    </div>
+    <input type="file" id="fileInput" accept=".json" hidden>
+    <input type="file" id="patchInput" accept=".json" hidden>
+
+    <script>
+        const state = {
+            data: null, fileName: '', totalMsgs: 0,
+            edits: new Map(),   // "convIdx:msgIdx" -> 修改后的 content
+            current: -1,
+            searchText: null,   // 每会话小写检索串，首次搜索时构建
+        };
+
+        // 主区域话术高亮搜索状态：q 为关键词，matches 为 [{ci, mi}]，cur 为当前匹配下标
+        const search = { q: '', matches: [], cur: -1 };
+
+        const $ = id => document.getElementById(id);
+        const keyOf = (ci, mi) => ci + ':' + mi;
+
+        function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+        /* ---------- 数据加载与校验 ---------- */
+        function validateData(data) {
+            const errors = [];
+            if (!Array.isArray(data)) return ['顶层结构不是 JSON 数组'];
+            data.forEach((conv, i) => {
+                const msgs = conv && conv.messages;
+                if (!Array.isArray(msgs) || msgs.length === 0) { errors.push(`会话 ${i}: messages 缺失或为空`); return; }
+                const roles = [];
+                msgs.forEach((m, j) => {
+                    if (!m || typeof m.role !== 'string' || typeof m.content !== 'string') {
+                        errors.push(`会话 ${i} 消息 ${j}: 缺少 role 或 content 字段`); return;
+                    }
+                    roles.push(m.role);
+                });
+                if (!roles.length) return;
+                if (roles[0] !== 'system') errors.push(`会话 ${i}: 首条消息不是 system`);
+                else if (roles.filter(r => r === 'system').length > 1) errors.push(`会话 ${i}: 存在多条 system 消息`);
+                for (let j = 1; j < roles.length; j++) {
+                    const expect = j % 2 === 1 ? 'user' : 'assistant';
+                    if (roles[j] !== 'user' && roles[j] !== 'assistant') errors.push(`会话 ${i} 消息 ${j}: 非法角色 ${roles[j]}`);
+                    else if (roles[j] !== expect) errors.push(`会话 ${i} 消息 ${j}: 应为 ${expect}，实际为 ${roles[j]}`);
+                }
+                if ((roles.length - 1) % 2 !== 0) errors.push(`会话 ${i}: 非 system 消息数为奇数，存在未配对轮次`);
+            });
+            return errors;
+        }
+
+        function loadData(data, fileName) {
+            const errors = validateData(data);
+            if (errors.length) {
+                alert('数据结构校验未通过，共 ' + errors.length + ' 处问题：\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? '\n...' : ''));
+                return;
+            }
+            state.data = data;
+            state.fileName = fileName;
+            state.totalMsgs = data.reduce((s, c) => s + c.messages.length, 0);
+            state.edits = new Map();
+            state.current = -1;
+            state.searchText = null;
+            search.q = ''; search.matches = []; search.cur = -1;
+            restoreEdits();
+            $('filter').disabled = false;
+            $('btnImport').disabled = false; $('btnExport').disabled = false;
+            renderSidebar();
+            selectConv(0);
+            updateProgress();
+        }
+
+        /* ---------- 本地暂存 ---------- */
+        function storageKey() { return `pair_annotator:${state.fileName}:${state.data.length}:${state.totalMsgs}`; }
+        let saveTimer = null;
+        function scheduleSave() {
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+                localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+            }, 300);
+        }
+        function restoreEdits() {
+            try {
+                const raw = localStorage.getItem(storageKey());
+                if (raw) state.edits = new Map(JSON.parse(raw));
+            } catch (e) { /* 忽略损坏的暂存 */ }
+        }
+
+        /* ---------- 侧栏 ---------- */
+        function convEditCount(ci) {
+            let n = 0;
+            for (const k of state.edits.keys()) if (Number(k.split(':')[0]) === ci) n++;
+            return n;
+        }
+        function buildSearchText() {
+            state.searchText = state.data.map(c => c.messages.map(m => m.content).join('\n').toLowerCase());
+        }
+        function renderSidebar() {
+            const list = $('convList');
+            list.textContent = '';
+            const q = search.q.trim().toLowerCase();
+            const filter = $('filter').value;
+            if (q && !state.searchText) buildSearchText();
+            state.data.forEach((conv, i) => {
+                const mod = convEditCount(i);
+                if (filter === 'modified' && !mod) return;
+                if (filter === 'unmodified' && mod) return;
+                if (q && !String(i).includes(q) && !state.searchText[i].includes(q)) return;
+                const item = el('div', 'conv-item' + (i === state.current ? ' active' : ''));
+                item.dataset.ci = i;
+                const meta = el('div', 'meta');
+                const idx = el('span'); idx.textContent = '#' + i;
+                const turns = el('span'); turns.textContent = ((conv.messages.length - 1) / 2) + ' 轮';
+                meta.append(idx, turns);
+                if (mod) { const b = el('span', 'badge'); b.textContent = '改 ' + mod; meta.append(b); }
+                const preview = el('div', 'preview');
+                const firstUser = conv.messages.find(m => m.role === 'user');
+                preview.textContent = firstUser ? firstUser.content : '(无 user 消息)';
+                item.append(meta, preview);
+                item.addEventListener('click', () => selectConv(i));
+                list.append(item);
+            });
+        }
+        function refreshSidebarItem(ci) {
+            const item = $('convList').querySelector(`[data-ci="${ci}"]`);
+            if (!item) return;
+            const meta = item.querySelector('.meta');
+            const old = meta.querySelector('.badge');
+            if (old) old.remove();
+            const mod = convEditCount(ci);
+            if (mod) { const b = el('span', 'badge'); b.textContent = '改 ' + mod; meta.append(b); }
+        }
+
+        /* ---------- 主区域 ---------- */
+        function selectConv(i) {
+            if (!state.data || i < 0 || i >= state.data.length) return;
+            state.current = i;
+            document.querySelectorAll('.conv-item.active').forEach(e => e.classList.remove('active'));
+            const item = $('convList').querySelector(`[data-ci="${i}"]`);
+            if (item) { item.classList.add('active'); item.scrollIntoView({ block: 'nearest' }); }
+            renderMain();
+        }
+
+        function groupTurns(msgs) {
+            // 贪心分组：遇到 user 开新一轮；非 user 归入当前轮（无当前轮则自成一轮）
+            const turns = []; let cur = null;
+            for (let i = 1; i < msgs.length; i++) {
+                if (msgs[i].role === 'user' || !cur) { cur = []; turns.push(cur); }
+                cur.push(i);
+            }
+            return turns;
+        }
+
+        function renderMain() {
+            const main = $('main');
+            main.textContent = '';
+            const ci = state.current;
+            const conv = state.data[ci];
+            const msgs = conv.messages;
+
+            const head = el('div', 'conv-header');
+            const sg = el('div', 'search-group');
+            const si = el('input'); si.id = 'mainSearch'; si.placeholder = '搜索关键词/短句（高亮+筛选会话，Enter 下一个）';
+            si.value = search.q;
+            let searchTimer = null;
+            si.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => doSearch(true), 250); });
+            si.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); doSearch(e.shiftKey ? 'prev' : 'next'); }
+            });
+            const btnUp = el('button'); btnUp.textContent = '↑'; btnUp.title = '上一个匹配';
+            btnUp.addEventListener('click', () => jumpToMatch(search.cur - 1));
+            const btnDown = el('button'); btnDown.textContent = '↓'; btnDown.title = '下一个匹配';
+            btnDown.addEventListener('click', () => jumpToMatch(search.cur + 1));
+            const cnt = el('span', 'count'); cnt.id = 'matchCount';
+            sg.append(si, btnUp, btnDown, cnt);
+
+            const btnPrev = el('button'); btnPrev.textContent = '← 上一条'; btnPrev.disabled = ci === 0;
+            btnPrev.addEventListener('click', () => selectConv(ci - 1));
+            const btnNext = el('button'); btnNext.textContent = '下一条 →'; btnNext.disabled = ci === state.data.length - 1;
+            btnNext.addEventListener('click', () => selectConv(ci + 1));
+            const title = el('span', 'title');
+            title.textContent = `会话 #${ci}（共 ${(msgs.length - 1) / 2} 轮）`;
+            head.append(sg, title, btnPrev, btnNext);
+            main.append(head);
+
+            // system 卡片（只读、可折叠）
+            const sysCard = el('div', 'sys-card');
+            sysCard.dataset.key = ci + ':0';
+            const sysHead = el('div', 'sys-head');
+            const lock = el('span', 'lock'); lock.textContent = '🔒 system（只读）';
+            const toggle = el('button', 'link'); toggle.textContent = '展开';
+            sysHead.append(lock, toggle);
+            const sysBody = el('div', 'sys-body');
+            sysBody.textContent = msgs[0].content;
+            toggle.addEventListener('click', () => {
+                sysBody.classList.toggle('expanded');
+                toggle.textContent = sysBody.classList.contains('expanded') ? '收起' : '展开';
+            });
+            sysCard.append(sysHead, sysBody);
+            main.append(sysCard);
+
+            // 按轮次成对渲染
+            groupTurns(msgs).forEach((turn, t) => {
+                const card = el('div', 'turn');
+                const th = el('div', 'turn-head'); th.textContent = '第 ' + (t + 1) + ' 轮';
+                card.append(th);
+                turn.forEach(mi => card.append(msgBlock(ci, mi)));
+                main.append(card);
+            });
+            main.querySelectorAll('textarea').forEach(autoResize);
+            refreshHighlights();
+            updateMatchUI();
+        }
+
+        function msgBlock(ci, mi) {
+            const m = state.data[ci].messages[mi];
+            const k = keyOf(ci, mi);
+            const edited = state.edits.get(k);
+            const isMod = edited !== undefined && edited !== m.content;
+
+            const wrap = el('div', 'msg' + (isMod ? ' modified' : ''));
+            wrap.dataset.key = k;
+            const head = el('div', 'msg-head');
+            const role = el('span', 'role ' + (m.role === 'user' ? 'user' : m.role === 'assistant' ? 'assistant' : 'other'));
+            role.textContent = m.role;
+            const idx = el('span'); idx.textContent = '#' + mi;
+            head.append(role, idx);
+            if ('loss' in m) { const lb = el('span', 'badge gray'); lb.textContent = 'loss: ' + m.loss; head.append(lb); }
+            const modBadge = el('span', 'badge mod-badge'); modBadge.textContent = '已修改';
+            head.append(modBadge);
+            const spacer = el('span', 'spacer'); head.append(spacer);
+            const btnOrig = el('button', 'link only-mod'); btnOrig.textContent = '原文';
+            const btnRevert = el('button', 'link only-mod'); btnRevert.textContent = '还原';
+            head.append(btnOrig, btnRevert);
+
+            const ta = el('textarea');
+            ta.value = isMod ? edited : m.content;
+            ta.rows = 1;
+            ta.addEventListener('input', () => { autoResize(ta); onEdit(ci, mi, ta, wrap); });
+
+            const taWrap = el('div', 'ta-wrap');
+            const bd = el('div', 'backdrop');
+            const hl = el('div', 'hl');
+            bd.append(hl);
+            taWrap.append(bd, ta);
+
+            const orig = el('div', 'orig');
+            orig.textContent = m.content;
+            btnOrig.addEventListener('click', () => orig.classList.toggle('show'));
+            btnRevert.addEventListener('click', () => { ta.value = m.content; autoResize(ta); onEdit(ci, mi, ta, wrap); });
+
+            wrap.append(head, taWrap, orig);
+            return wrap;
+        }
+
+        function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+
+        function onEdit(ci, mi, ta, wrap) {
+            const orig = state.data[ci].messages[mi].content;
+            const k = keyOf(ci, mi);
+            const isMod = ta.value !== orig;
+            if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
+            wrap.classList.toggle('modified', isMod);
+            const hl = wrap.querySelector('.backdrop .hl');
+            if (hl) hl.innerHTML = search.q ? highlightHTML(ta.value, search.q) : '';
+            refreshSidebarItem(ci);
+            updateProgress();
+            scheduleSave();
+        }
+
+        function updateProgress() {
+            if (!state.data) return;
+            const convs = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0]))).size;
+            $('progressText').textContent =
+                `${state.fileName} · 已修改会话 ${convs}/${state.data.length} · 已修改消息 ${state.edits.size}`;
+        }
+
+        /* ---------- 话术搜索与高亮 ---------- */
+        function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+        function escapeHTML(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        function highlightHTML(text, q) {
+            if (!q) return escapeHTML(text) + ' ';
+            const re = new RegExp(escapeRegExp(q), 'gi');
+            let out = '', last = 0, m;
+            while ((m = re.exec(text))) {
+                out += escapeHTML(text.slice(last, m.index)) + '<mark>' + escapeHTML(m[0]) + '</mark>';
+                last = m.index + m[0].length;
+                if (m[0].length === 0) re.lastIndex++;
+            }
+            return out + escapeHTML(text.slice(last)) + ' ';
+        }
+        function refreshHighlights() {
+            if (!state.data || state.current < 0) return;
+            const q = search.q;
+            const sysBody = $('main').querySelector('.sys-body');
+            if (sysBody) {
+                const content = state.data[state.current].messages[0].content;
+                if (q) sysBody.innerHTML = highlightHTML(content, q);
+                else sysBody.textContent = content;
+            }
+            $('main').querySelectorAll('.msg').forEach(wrap => {
+                const ta = wrap.querySelector('textarea');
+                const hl = wrap.querySelector('.backdrop .hl');
+                if (ta && hl) { hl.innerHTML = q ? highlightHTML(ta.value, q) : ''; }
+            });
+        }
+        function updateMatchUI() {
+            const cnt = $('matchCount');
+            if (!cnt) return;
+            cnt.textContent = search.q ? (search.matches.length ? `${search.cur + 1}/${search.matches.length}` : '无匹配') : '';
+        }
+        function clearCurMatch() {
+            document.querySelectorAll('.cur-match').forEach(e => e.classList.remove('cur-match'));
+        }
+        function computeMatches(q) {
+            const res = [];
+            if (!q || !state.data) return res;
+            const lq = q.toLowerCase();
+            state.data.forEach((conv, ci) => {
+                conv.messages.forEach((m, mi) => {
+                    if (m.content.toLowerCase().includes(lq)) res.push({ ci, mi });
+                });
+            });
+            return res;
+        }
+        function doSearch(mode) {
+            const si = $('mainSearch');
+            const q = si ? si.value : '';
+            if (mode === true || q !== search.q) {
+                search.q = q;
+                search.matches = computeMatches(q);
+                search.cur = -1;
+                refreshHighlights();
+                updateMatchUI();
+                renderSidebar();
+                if (search.matches.length) jumpToMatch(0);
+                else clearCurMatch();
+                return;
+            }
+            if (mode === 'next') jumpToMatch(search.cur + 1);
+            else if (mode === 'prev') jumpToMatch(search.cur - 1);
+        }
+        function jumpToMatch(i) {
+            if (!search.matches.length) return;
+            search.cur = ((i % search.matches.length) + search.matches.length) % search.matches.length;
+            const { ci, mi } = search.matches[search.cur];
+            const sameConv = ci === state.current;
+            if (!sameConv) selectConv(ci);
+            clearCurMatch();
+            const target = $('main').querySelector(`[data-key="${ci}:${mi}"]`);
+            if (target) {
+                target.classList.add('cur-match');
+                target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+            updateMatchUI();
+            const si = $('mainSearch');
+            if (si && document.activeElement !== si) {
+                si.focus();
+                si.setSelectionRange(si.value.length, si.value.length);
+            }
+        }
+
+        /* ---------- 导入 / 导出补丁 ---------- */
+        function exportPatch() {
+            const edits = [...state.edits.entries()].map(([k, content]) => {
+                const [ci, mi] = k.split(':').map(Number);
+                return { conv_idx: ci, msg_idx: mi, content };
+            }).sort((a, b) => a.conv_idx - b.conv_idx || a.msg_idx - b.msg_idx);
+            const payload = {
+                source: state.fileName,
+                exported_at: new Date().toISOString(),
+                edit_count: edits.length,
+                edits,
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const a = el('a');
+            a.href = URL.createObjectURL(blob);
+            const ts = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
+            a.download = `edits_${state.fileName.replace(/\.json$/i, '')}_${ts}.json`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        function importPatch(file) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                let patch;
+                try { patch = JSON.parse(reader.result); } catch (e) { alert('补丁文件不是合法 JSON'); return; }
+                const edits = Array.isArray(patch) ? patch : patch && Array.isArray(patch.edits) ? patch.edits : null;
+                if (!edits) { alert('补丁格式不正确：应为数组或含 edits 数组的对象'); return; }
+                let applied = 0, skipped = 0;
+                const errs = [];
+                edits.forEach((e, k) => {
+                    const ci = e && e.conv_idx, mi = e && e.msg_idx, content = e && e.content;
+                    if (!Number.isInteger(ci) || !Number.isInteger(mi) || typeof content !== 'string'
+                        || ci < 0 || ci >= state.data.length || mi < 0 || mi >= state.data[ci].messages.length) {
+                        errs.push(`第 ${k} 条索引非法`); return;
+                    }
+                    const m = state.data[ci].messages[mi];
+                    if (m.role !== 'user' && m.role !== 'assistant') { errs.push(`第 ${k} 条指向 ${m.role} 消息，已拒绝`); return; }
+                    if (content === m.content) { skipped++; return; }
+                    state.edits.set(keyOf(ci, mi), content);
+                    applied++;
+                });
+                scheduleSave();
+                renderSidebar();
+                renderMain();
+                updateProgress();
+                alert(`导入完成：应用 ${applied} 条，无变化跳过 ${skipped} 条` + (errs.length ? `，拒绝 ${errs.length} 条：\n` + errs.slice(0, 10).join('\n') : ''));
+            };
+            reader.readAsText(file);
+        }
+
+        /* ---------- 事件绑定 ---------- */
+        $('btnOpen').addEventListener('click', () => $('fileInput').click());
+        $('fileInput').addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try { loadData(JSON.parse(reader.result), f.name); }
+                catch (err) { alert('文件不是合法 JSON：' + err.message); }
+            };
+            reader.readAsText(f);
+            e.target.value = '';
+        });
+        $('btnExport').addEventListener('click', exportPatch);
+        $('btnImport').addEventListener('click', () => $('patchInput').click());
+        $('patchInput').addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (f) importPatch(f);
+            e.target.value = '';
+        });
+        $('filter').addEventListener('change', renderSidebar);
+
+        // 支持 ?data=xxx.json 直接加载（需通过 http 访问）
+        (function () {
+            const p = new URLSearchParams(location.search).get('data');
+            if (!p) return;
+            fetch(p).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            }).then(data => loadData(data, p.split('/').pop()))
+                .catch(err => alert('自动加载失败：' + err.message));
+        })();
+    </script>
+</body>
+
+</html>
