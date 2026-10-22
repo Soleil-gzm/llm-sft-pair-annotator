@@ -873,7 +873,7 @@
         function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
         function escapeHTML(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
         function highlightHTML(text, q) {
-            if (!q) return escapeHTML(text) + ' ';
+            if (!q) return escapeHTML(text) + ' ';
             const re = new RegExp(escapeRegExp(q), 'gi');
             let out = '', last = 0, m;
             while ((m = re.exec(text))) {
@@ -881,7 +881,7 @@
                 last = m.index + m[0].length;
                 if (m[0].length === 0) re.lastIndex++;
             }
-            return out + escapeHTML(text.slice(last)) + ' ';
+            return out + escapeHTML(text.slice(last)) + ' ';
         }
         // 逐字对比原文与当前文本，返回当前文本中改动区间的 [start, end)
         function diffSpan(orig, cur) {
@@ -916,7 +916,7 @@
                 out += t === 's' ? '<mark>' + seg + '</mark>' : t === 'd' ? '<mark class="d">' + seg + '</mark>' : seg;
                 i = j;
             }
-            return out + ' ';
+            return out + ' ';
         }
         function refreshHighlights() {
             if (!state.data || state.current < 0) return;
@@ -1159,32 +1159,15 @@
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
             const fname = `patch_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
 
-            // 优先弹系统"另存为"对话框
-            if (window.showSaveFilePicker) {
-                try {
-                    const handle = await window.showSaveFilePicker({
-                        suggestedName: fname,
-                        types: [{ description: '标注补丁 JSON', accept: { 'application/json': ['.json'] } }],
-                    });
-                    const w = await handle.createWritable();
-                    await w.write(blob);
-                    await w.close();
-                } catch (err) {
-                    // 如果用户主动取消（AbortError），静默返回；如果是其他错误，提示用户。
-                    // 无论如何，不要再往下走，防止触发二次弹窗。
-                    if (err && err.name !== 'AbortError') {
-                        alert('保存失败：' + err.message + '\n建议检查浏览器设置或手动将内容复制保存。');
-                    }
-                }
-                return; // 核心：调用过新 API 后，无论如何都直接结束
-            }
-
-            // 回退方案：仅针对不支持 showSaveFilePicker 的老旧浏览器（如 Firefox）
+            // 直接使用传统下载，确保 100% 成功率，不受 file:// 协议或浏览器安全策略限制
             const a = el('a');
             a.href = URL.createObjectURL(blob);
             a.download = fname;
             a.click();
             URL.revokeObjectURL(a.href);
+
+            // 友好提示用户去默认下载目录取文件
+            alert(`补丁已成功导出！\n\n文件名：${fname}\n\n由于浏览器安全限制，文件已自动保存到您电脑的「默认下载目录」（如 Downloads 文件夹）。\n\n请手动将下载的补丁文件移动到「补丁导出文件」文件夹内，以便进行统一合并。`);
         }
 
         function importPatch(file) {
