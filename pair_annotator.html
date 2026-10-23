@@ -537,8 +537,8 @@
         <span id="progressText">未加载数据</span>
         <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
-        <button id="btnImport" disabled>导入补丁</button>
-        <button id="btnExport" disabled>导出补丁</button>
+        <button id="btnExportFull" disabled>导出完整文件</button>
+        <button id="btnUndo" disabled>撤销</button>
     </header>
     <div class="layout">
         <aside>
@@ -556,7 +556,6 @@
         </main>
     </div>
     <input type="file" id="fileInput" accept=".json" hidden>
-    <input type="file" id="patchInput" accept=".json" hidden>
 
     <!-- 标注人署名弹窗 -->
     <div id="annotatorModal" class="modal-mask" hidden>
@@ -648,7 +647,7 @@
             search.q = ''; search.matches = []; search.cur = -1;
             restoreEdits();
             $('filter').disabled = false;
-            $('btnImport').disabled = false; $('btnExport').disabled = false;
+            $('btnExportFull').disabled = false;
             renderSidebar();
             selectConv(0);
             updateProgress();
@@ -1138,26 +1137,43 @@
         });
 
         /* ---------- 导入 / 导出补丁 ---------- */
-        async function exportPatch() {
-            if (!getAnnotator()) { openAnnotatorModal(exportPatch); return; }
-            const annotator = getAnnotator();
-            const edits = [...state.edits.entries()].map(([k, content]) => {
-                const [ci, mi] = k.split(':').map(Number);
-                return { conv_idx: ci, msg_idx: mi, content };
-            }).sort((a, b) => a.conv_idx - b.conv_idx || a.msg_idx - b.msg_idx);
-            const payload = {
-                source: state.fileName,
-                data_sig: state.dataSig,
-                annotator,
-                exported_at: new Date().toISOString(),
-                edit_count: edits.length,
-                edits,
-            };
-            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+        // 会话列表点击委托（配合 innerHTML 批量渲染）
+        $('convList').addEventListener('click', e => {
+            const item = e.target.closest('.conv-item');
+            if (item) selectConv(Number(item.dataset.ci));
+        });
+        $('btnAnnotator').addEventListener('click', () => openAnnotatorModal(null));
+        updateAnnotatorUI();
+        $('filter').addEventListener('change', renderSidebar);
+
+        // 支持 ?data=xxx.json 直接加载（需通过 http 访问）
+        (function () {
+            const p = new URLSearchParams(location.search).get('data');
+            if (!p) return;
+            fetch(p).then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            }).then(data => loadData(data, p.split('/').pop()))
+                .catch(err => alert('自动加载失败：' + err.message));
+        })();
+        // 导出完整对话文件（包含所有修改后的内容）
+        async function exportFullFile() {
+            // 创建完整数据副本，应用所有修改
+            const fullData = JSON.parse(JSON.stringify(state.data));
+            
+            // 应用所有编辑修改
+            state.edits.forEach((content, key) => {
+                const [ci, mi] = key.split(':').map(Number);
+                if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
+                    fullData[ci].messages[mi].content = content;
+                }
+            });
+            
+            const blob = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const fname = `patch_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
+            const fname = `full_${state.fileName.replace(/\\.json$/i, '')}_${ts}.json`;
 
             // 直接使用传统下载，确保 100% 成功率，不受 file:// 协议或浏览器安全策略限制
             const a = el('a');
@@ -1166,38 +1182,8 @@
             a.click();
             URL.revokeObjectURL(a.href);
 
-            // 友好提示用户去默认下载目录取文件
-            alert(`补丁已成功导出！\n\n文件名：${fname}\n\n由于浏览器安全限制，文件已自动保存到您电脑的「默认下载目录」（如 Downloads 文件夹）。\n\n请手动将下载的补丁文件移动到「补丁导出文件」文件夹内，以便进行统一合并。`);
-        }
-
-        function importPatch(file) {
-            const reader = new FileReader();
-            reader.onload = () => {
-                let patch;
-                try { patch = JSON.parse(reader.result); } catch (e) { alert('补丁文件不是合法 JSON'); return; }
-                const edits = Array.isArray(patch) ? patch : patch && Array.isArray(patch.edits) ? patch.edits : null;
-                if (!edits) { alert('补丁格式不正确：应为数组或含 edits 数组的对象'); return; }
-                let applied = 0, skipped = 0;
-                const errs = [];
-                edits.forEach((e, k) => {
-                    const ci = e && e.conv_idx, mi = e && e.msg_idx, content = e && e.content;
-                    if (!Number.isInteger(ci) || !Number.isInteger(mi) || typeof content !== 'string'
-                        || ci < 0 || ci >= state.data.length || mi < 0 || mi >= state.data[ci].messages.length) {
-                        errs.push(`第 ${k} 条索引非法`); return;
-                    }
-                    const m = state.data[ci].messages[mi];
-                    if (m.role !== 'user' && m.role !== 'assistant') { errs.push(`第 ${k} 条指向 ${m.role} 消息，已拒绝`); return; }
-                    if (content === m.content) { skipped++; return; }
-                    state.edits.set(keyOf(ci, mi), content);
-                    applied++;
-                });
-                scheduleSave();
-                renderSidebar();
-                renderMain();
-                updateProgress();
-                alert(`导入完成：应用 ${applied} 条，无变化跳过 ${skipped} 条` + (errs.length ? `，拒绝 ${errs.length} 条：\n` + errs.slice(0, 10).join('\n') : ''));
-            };
-            reader.readAsText(file);
+            // 友好提示用户
+            alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容，可直接用于后续处理，无需额外合并步骤。`);
         }
 
         /* ---------- 事件绑定 ---------- */
@@ -1213,32 +1199,7 @@
             reader.readAsText(f);
             e.target.value = '';
         });
-        $('btnExport').addEventListener('click', exportPatch);
-        // 会话列表点击委托（配合 innerHTML 批量渲染）
-        $('convList').addEventListener('click', e => {
-            const item = e.target.closest('.conv-item');
-            if (item) selectConv(Number(item.dataset.ci));
-        });
-        $('btnAnnotator').addEventListener('click', () => openAnnotatorModal(null));
-        updateAnnotatorUI();
-        $('btnImport').addEventListener('click', () => $('patchInput').click());
-        $('patchInput').addEventListener('change', e => {
-            const f = e.target.files[0];
-            if (f) importPatch(f);
-            e.target.value = '';
-        });
-        $('filter').addEventListener('change', renderSidebar);
-
-        // 支持 ?data=xxx.json 直接加载（需通过 http 访问）
-        (function () {
-            const p = new URLSearchParams(location.search).get('data');
-            if (!p) return;
-            fetch(p).then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            }).then(data => loadData(data, p.split('/').pop()))
-                .catch(err => alert('自动加载失败：' + err.message));
-        })();
+        $('btnExportFull').addEventListener('click', exportFullFile);
     </script>
 </body>
 
