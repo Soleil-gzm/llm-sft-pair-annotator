@@ -1158,9 +1158,15 @@
         })();
         // 导出完整对话文件（包含所有修改后的内容）
         async function exportFullFile() {
+            // 检查是否已设置标注人，如果没有则弹出窗口要求填写
+            if (!getAnnotator()) {
+                openAnnotatorModal(exportFullFile);
+                return;
+            }
+            
             // 创建完整数据副本，应用所有修改
             const fullData = JSON.parse(JSON.stringify(state.data));
-            
+
             // 应用所有编辑修改
             state.edits.forEach((content, key) => {
                 const [ci, mi] = key.split(':').map(Number);
@@ -1168,12 +1174,13 @@
                     fullData[ci].messages[mi].content = content;
                 }
             });
-            
+
             const blob = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const fname = `full_${state.fileName.replace(/\\.json$/i, '')}_${ts}.json`;
+            const annotator = getAnnotator();
+            const fname = `full_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
 
             // 直接使用传统下载，确保 100% 成功率，不受 file:// 协议或浏览器安全策略限制
             const a = el('a');
