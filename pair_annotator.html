@@ -538,6 +538,7 @@
         <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
         <button id="btnExportFull" disabled>导出完整文件</button>
+        <button id="btnExportChanges" disabled>导出修改内容</button>
         <button id="btnUndo" disabled>撤销</button>
     </header>
     <div class="layout">
@@ -648,6 +649,7 @@
             restoreEdits();
             $('filter').disabled = false;
             $('btnExportFull').disabled = false;
+            $('btnExportChanges').disabled = false;
             renderSidebar();
             selectConv(0);
             updateProgress();
@@ -1163,7 +1165,7 @@
                 openAnnotatorModal(exportFullFile);
                 return;
             }
-            
+
             // 创建完整数据副本，应用所有修改
             const fullData = JSON.parse(JSON.stringify(state.data));
 
@@ -1192,7 +1194,100 @@
             // 友好提示用户
             alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容，可直接用于后续处理，无需额外合并步骤。`);
         }
+        async function exportChangesFile() {
+            if (!getAnnotator()) {
+                openAnnotatorModal(exportChangesFile);
+                return;
+            }
 
+            // 获取所有包含修改的对话索引
+            const modifiedConvIndices = new Set();
+            state.edits.forEach((content, key) => {
+                const [ci, mi] = key.split(':').map(Number);
+                if (Number.isInteger(ci)) {
+                    modifiedConvIndices.add(ci);
+                }
+            });
+
+            if (modifiedConvIndices.size === 0) {
+                alert('当前没有修改内容可以导出。');
+                return;
+            }
+
+            // 构建包含修改对话的完整数据
+            const changesData = [];
+
+            modifiedConvIndices.forEach((ci) => {
+                if (ci < 0 || ci >= state.data.length) return;
+
+                // 深拷贝完整对话
+                const conv = JSON.parse(JSON.stringify(state.data[ci]));
+
+                // 应用该对话中的所有修改
+                state.edits.forEach((content, key) => {
+                    const [editCi, editMi] = key.split(':').map(Number);
+                    if (
+                        editCi === ci &&
+                        editMi >= 0 &&
+                        editMi < conv.messages.length
+                    ) {
+                        conv.messages[editMi].content = content;
+                    }
+                });
+
+                changesData.push(conv);
+            });
+
+            // 创建导出 payload
+            const payload = {
+                source: state.fileName,
+                data_sig: state.dataSig,
+                annotator: getAnnotator(),
+                exported_at: new Date().toISOString(),
+                edit_count: changesData.length,
+                conversations: changesData
+            };
+
+            const blob = new Blob(
+                [JSON.stringify(payload, null, 2)],
+                { type: 'application/json' }
+            );
+
+            const d = new Date();
+            const p2 = n => String(n).padStart(2, '0');
+            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+
+            const annotator = getAnnotator();
+
+            // 文件名做一下非法字符处理，避免 Windows/浏览器下载失败
+            const baseName = String(state.fileName || 'data')
+                .replace(/\.json$/i, '')
+                .replace(/[\\/:*?"<>|]/g, '_');
+
+            const safeAnnotator = String(annotator || 'unknown')
+                .replace(/[\\/:*?"<>|]/g, '_');
+
+            const fname = `patch_changes_${baseName}_${safeAnnotator}_${ts}.json`;
+
+            // 直接下载
+            const a = document.createElement('a'); // 如果项目里有 el('a') 且确认可用，也可以保留
+            const url = URL.createObjectURL(blob);
+
+            a.href = url;
+            a.download = fname;
+
+            // 某些浏览器对未挂载 DOM 的 a.click() 兼容性不好，挂载一下更稳
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            // 延迟释放，避免下载还没开始就被 revoke
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+            alert(
+                `修改内容已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改的对话内容，可直接用于后续处理。`
+            );
+        }
         /* ---------- 事件绑定 ---------- */
         $('btnOpen').addEventListener('click', () => $('fileInput').click());
         $('fileInput').addEventListener('change', e => {
@@ -1207,7 +1302,11 @@
             e.target.value = '';
         });
         $('btnExportFull').addEventListener('click', exportFullFile);
+        $('btnExportChanges').addEventListener('click', exportChangesFile);
     </script>
+</body>
+
+</html>
 </body>
 
 </html>
