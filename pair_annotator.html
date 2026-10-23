@@ -538,8 +538,8 @@
         <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
         <button id="btnExportFull" disabled>导出完整文件</button>
-        <button id="btnExportChanges" disabled>导出修改内容（带记录）</button>
-        <button id="btnExportChangesDirect" disabled>导出修改内容（直接格式）</button>
+        <!-- 合并后的按钮 -->
+        <button id="btnExportChangesCombined" disabled>导出修改内容</button>
         <button id="btnUndo" disabled>撤销</button>
     </header>
     <div class="layout">
@@ -650,12 +650,11 @@
             // 清除之前保存的编辑状态
             localStorage.removeItem(storageKey());
             $('filter').disabled = false;
-
-            // 启用所有导出按钮
+            
+            // 启用导出按钮
             $('btnExportFull').disabled = false;
-            $('btnExportChanges').disabled = false;
-            $('btnExportChangesDirect').disabled = false;
-
+            $('btnExportChangesCombined').disabled = false;
+            
             renderSidebar();
             selectConv(0);
             updateProgress();
@@ -1145,7 +1144,7 @@
         });
 
         /* ---------- 导入 / 导出补丁 ---------- */
-
+        
         // 1. 导出完整文件
         async function exportFullFile() {
             if (!getAnnotator()) {
@@ -1175,10 +1174,10 @@
             alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容，可直接用于后续处理，无需额外合并步骤。`);
         }
 
-        // 2. 导出修改内容（带记录 payload 格式）
-        async function exportChangesFile() {
+        // 2. 一键导出两个文件（带记录版 + 原格式版）
+        async function exportChangesCombined() {
             if (!getAnnotator()) {
-                openAnnotatorModal(exportChangesFile);
+                openAnnotatorModal(exportChangesCombined);
                 return;
             }
 
@@ -1209,16 +1208,6 @@
                 changesData.push(conv);
             });
 
-            const payload = {
-                source: state.fileName,
-                data_sig: state.dataSig,
-                annotator: getAnnotator(),
-                exported_at: new Date().toISOString(),
-                edit_count: changesData.length,
-                conversations: changesData
-            };
-
-            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
@@ -1226,59 +1215,32 @@
             const annotator = getAnnotator();
             const baseName = String(state.fileName || 'data').replace(/\.json$/i, '').replace(/[\\/:*?"<>|]/g, '_');
             const safeAnnotator = String(annotator || 'unknown').replace(/[\\/:*?"<>|]/g, '_');
-            const fname = `patch_changes_${baseName}_${safeAnnotator}_${ts}.json`;
 
-            triggerDownload(blob, fname);
-            alert(`修改内容（带记录）已成功导出！\n\n文件名：${fname}`);
-        }
+            // --- 生成文件 1：带记录版 (Audit) ---
+            const payload = {
+                source: state.fileName,
+                data_sig: state.dataSig,
+                annotator: annotator,
+                exported_at: new Date().toISOString(),
+                edit_count: changesData.length,
+                conversations: changesData
+            };
+            const blobAudit = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const fnameAudit = `patch_audit_${baseName}_${safeAnnotator}_${ts}.json`;
 
-        // 3. 导出修改内容（原格式直接导出）
-        async function exportChangesFileDirect() {
-            if (!getAnnotator()) {
-                openAnnotatorModal(exportChangesFileDirect);
-                return;
-            }
+            // --- 生成文件 2：原格式版 (Raw) ---
+            const blobRaw = new Blob([JSON.stringify(changesData, null, 2)], { type: 'application/json' });
+            const fnameRaw = `patch_raw_${baseName}_${safeAnnotator}_${ts}.json`;
 
-            const modifiedConvIndices = new Set();
-            state.edits.forEach((content, key) => {
-                const [ci, mi] = key.split(":").map(Number);
-                if (Number.isInteger(ci)) {
-                    modifiedConvIndices.add(ci);
-                }
-            });
+            // 依次触发下载
+            triggerDownload(blobAudit, fnameAudit);
 
-            if (modifiedConvIndices.size === 0) {
-                alert("当前没有修改内容可以导出。");
-                return;
-            }
+            // 延迟 500ms 触发第二个下载，防止被浏览器拦截
+            setTimeout(() => {
+                triggerDownload(blobRaw, fnameRaw);
+            }, 500);
 
-            const changesData = [];
-            modifiedConvIndices.forEach((ci) => {
-                if (ci < 0 || ci >= state.data.length) return;
-
-                const conv = JSON.parse(JSON.stringify(state.data[ci]));
-                state.edits.forEach((content, key) => {
-                    const [editCi, editMi] = key.split(":").map(Number);
-                    if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
-                        conv.messages[editMi].content = content;
-                    }
-                });
-                changesData.push(conv);
-            });
-
-            // 直接导出修改后的对话数据，不包装在 payload 中
-            const blob = new Blob([JSON.stringify(changesData, null, 2)], { type: "application/json" });
-            const d = new Date();
-            const p2 = n => String(n).padStart(2, "0");
-            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-
-            const annotator = getAnnotator();
-            const baseName = String(state.fileName || "data").replace(/\.json$/i, "").replace(/[\\/:*?"<>|]/g, "_");
-            const safeAnnotator = String(annotator || "unknown").replace(/[\\/:*?"<>|]/g, "_");
-            const fname = `patch_changes_direct_${baseName}_${safeAnnotator}_${ts}.json`;
-
-            triggerDownload(blob, fname);
-            alert(`修改内容（原格式）已成功导出！\n\n文件名：${fname}`);
+            alert(`已成功导出两个文件！\n\n1. 带记录版：${fnameAudit}\n2. 原格式版：${fnameRaw}\n\n如果只看到了一个文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。`);
         }
 
         // 抽离一个下载逻辑（最稳版本）
@@ -1326,10 +1288,10 @@
             reader.readAsText(f);
             e.target.value = '';
         });
-
+        
         $('btnExportFull').addEventListener('click', exportFullFile);
-        $('btnExportChanges').addEventListener('click', exportChangesFile);
-        $('btnExportChangesDirect').addEventListener('click', exportChangesFileDirect);
+        // 绑定合并后的按钮
+        $('btnExportChangesCombined').addEventListener('click', exportChangesCombined);
     </script>
 </body>
 
