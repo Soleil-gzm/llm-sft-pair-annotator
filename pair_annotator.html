@@ -646,7 +646,8 @@
             state.current = -1;
             state.searchText = null;
             search.q = ''; search.matches = []; search.cur = -1;
-            restoreEdits();
+            // 清除之前保存的编辑状态
+            localStorage.removeItem(storageKey());
             $('filter').disabled = false;
             $('btnExportFull').disabled = false;
             $('btnExportChanges').disabled = false;
