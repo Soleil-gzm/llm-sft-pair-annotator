@@ -592,6 +592,7 @@
             current: -1,
             searchText: null,   // 每会话小写检索串，首次搜索时构建
             lastBatch: null,    // 上一次批量替换的 undo 记录：{ edits: [ [key, oldContent], ... ] }
+            hasExported: false, // 标记当前状态是否刚刚被导出，用于阻止 beforeunload 错误保存
         };
 
         // 主区域话术高亮搜索状态：q 为关键词，matches 为 [{ci, mi}]，cur 为当前匹配下标
@@ -648,8 +649,9 @@
             state.current = -1;
             state.searchText = null;
             search.q = ''; search.matches = []; search.cur = -1;
+            state.hasExported = false;
 
-            // 【修改点1】恢复本地暂存的修改，而不是清空
+            // 恢复本地暂存的修改
             restoreEdits();
 
             $('filter').disabled = false;
@@ -666,8 +668,13 @@
         let saveTimer = null;
         function scheduleSave() {
             clearTimeout(saveTimer);
+            if (state.hasExported) return; // 如果刚刚导出，暂时不保存
             saveTimer = setTimeout(() => {
-                localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+                if (state.edits.size > 0) {
+                    localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+                } else {
+                    localStorage.removeItem(storageKey());
+                }
             }, 300);
         }
         function restoreEdits() {
@@ -675,6 +682,22 @@
                 const raw = localStorage.getItem(storageKey());
                 if (raw) state.edits = new Map(JSON.parse(raw));
             } catch (e) { /* 忽略损坏的暂存 */ }
+        }
+
+        // 导出成功后重置界面和缓存
+        function resetAfterExport() {
+            clearTimeout(saveTimer);
+            state.hasExported = true;
+            state.edits.clear();
+            state.lastBatch = null;
+            localStorage.removeItem(storageKey());
+
+            const ri = $('replaceInput');
+            if (ri) ri.value = '';
+
+            renderSidebar();
+            if (state.current >= 0) selectConv(state.current);
+            updateProgress();
         }
 
         /* ---------- 侧栏 ---------- */
@@ -861,6 +884,10 @@
             const k = keyOf(ci, mi);
             const isMod = ta.value !== orig;
             if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
+
+            // 只要用户再次开始编辑，取消“刚导出”的标记，重新启用自动暂存
+            state.hasExported = false;
+
             wrap.classList.toggle('modified', isMod);
             const hl = wrap.querySelector('.backdrop .hl');
             if (hl) hl.innerHTML = renderBackdropHTML(ta.value, orig, search.q);
@@ -1054,6 +1081,10 @@
         }
         function refreshAfterBatch() {
             if (state.current < 0) state.current = 0;
+
+            // 确保批量替换也算作编辑，重置导出标记
+            state.hasExported = false;
+
             renderMain();
             buildSearchText();
             search.matches = computeMatches(search.q);
@@ -1172,10 +1203,11 @@
             const fname = `full_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
 
             triggerDownload(blob, fname);
-            // 【修改点3】导出成功后清理缓存
-            localStorage.removeItem(storageKey());
 
-            alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容，可直接用于后续处理，无需额外合并步骤。`);
+            // 彻底清理内存和本地缓存，重置界面
+            resetAfterExport();
+
+            alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`);
         }
 
         // 2. 一键导出两个文件（带记录版 + 原格式版）
@@ -1244,10 +1276,10 @@
                 triggerDownload(blobRaw, fnameRaw);
             }, 500);
 
-            // 【修改点3】导出成功后清理缓存
-            localStorage.removeItem(storageKey());
+            // 彻底清理内存和本地缓存，重置界面
+            resetAfterExport();
 
-            alert(`已成功导出两个文件！\n\n1. 带记录版：${fnameAudit}\n2. 原格式版：${fnameRaw}\n\n如果只看到了一个文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。`);
+            alert(`已成功导出两个文件！\n\n1. 带记录版：${fnameAudit}\n2. 原格式版：${fnameRaw}\n\n如果只看到了一个文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`);
         }
 
         // 抽离一个下载逻辑（最稳版本）
@@ -1299,10 +1331,16 @@
         $('btnExportFull').addEventListener('click', exportFullFile);
         // 绑定合并后的按钮
         $('btnExportChangesCombined').addEventListener('click', exportChangesCombined);
-        // 【修改点2】在页面关闭或刷新前，强制同步一次缓存，防止定时器未触发导致数据丢失
+
+        // 在页面关闭或刷新前同步一次缓存
         window.addEventListener('beforeunload', () => {
             if (state.data) {
-                localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+                // 如果刚刚导出过（内存为空），则清理缓存，不再保存
+                if (state.edits.size > 0) {
+                    localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+                } else {
+                    localStorage.removeItem(storageKey());
+                }
             }
         });
 
