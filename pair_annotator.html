@@ -86,7 +86,7 @@
             border: 1px solid var(--border);
         }
 
-        /* 标注人弹窗（内嵌实现，避免浏览器拦截原生 prompt） */
+        /* 通用弹窗样式 */
         .modal-mask {
             position: fixed;
             inset: 0;
@@ -120,7 +120,7 @@
             margin-bottom: 10px;
         }
 
-        .modal input {
+        .modal input[type="text"] {
             width: 100%;
             box-sizing: border-box;
             border: 1px solid var(--border);
@@ -275,7 +275,6 @@
             text-align: center;
         }
 
-        /* 批量替换区域（在搜索栏右侧展开） */
         .replace-group {
             display: flex;
             align-items: center;
@@ -318,7 +317,6 @@
             cursor: not-allowed;
         }
 
-        /* 批量替换预览弹窗 */
         .modal-preview {
             max-height: 50vh;
             overflow-y: auto;
@@ -537,10 +535,8 @@
         <span id="progressText">未加载数据</span>
         <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
-        <button id="btnExportFull" disabled>导出完整文件</button>
-        <!-- 合并后的按钮 -->
-        <button id="btnExportChangesCombined" disabled>导出修改内容</button>
-        <button id="btnUndo" disabled>撤销</button>
+        <!-- 合并为一个统一的导出按钮 -->
+        <button id="btnExportData" disabled>导出数据</button>
     </header>
     <div class="layout">
         <aside>
@@ -563,7 +559,7 @@
     <div id="annotatorModal" class="modal-mask" hidden>
         <div class="modal">
             <h3>填写标注人</h3>
-            <p class="modal-tip">姓名/工号将写入补丁文件名，便于追溯；只需填写一次</p>
+            <p class="modal-tip">姓名/工号将写入文件名，便于追溯；只需填写一次</p>
             <input id="annotatorInput" type="text" placeholder="如：张三" maxlength="20">
             <div class="modal-actions">
                 <button id="annotatorCancel" class="secondary">取消</button>
@@ -585,17 +581,46 @@
         </div>
     </div>
 
+    <!-- 导出选择弹窗 -->
+    <div id="exportModal" class="modal-mask" hidden>
+        <div class="modal" style="width: 360px;">
+            <h3>选择导出内容</h3>
+            <p class="modal-tip">请勾选您需要提交的文件格式，系统将自动下载。</p>
+            <div style="margin: 15px 0; display: flex; flex-direction: column; gap: 12px;">
+                <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 0.9rem;">
+                    <input type="checkbox" id="chkExportFull" checked
+                        style="width: 16px; height: 16px; margin-top: 2px;">
+                    <div>
+                        <b>完整文件</b>
+                        <div style="font-size: 0.75rem; color: var(--text2);">包含全部修改的完整数据</div>
+                    </div>
+                </label>
+                <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 0.9rem;">
+                    <input type="checkbox" id="chkExportPatch" checked
+                        style="width: 16px; height: 16px; margin-top: 2px;">
+                    <div>
+                        <b>修改补丁</b>
+                        <div style="font-size: 0.75rem; color: var(--text2);">仅包含修改的片段，分为带记录版和纯净版</div>
+                    </div>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button id="exportCancel" class="secondary">取消</button>
+                <button id="exportOk">确认导出</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
-            edits: new Map(),   // "convIdx:msgIdx" -> 修改后的 content
+            edits: new Map(),
             current: -1,
-            searchText: null,   // 每会话小写检索串，首次搜索时构建
-            lastBatch: null,    // 上一次批量替换的 undo 记录：{ edits: [ [key, oldContent], ... ] }
-            hasExported: false, // 标记当前状态是否刚刚被导出，用于阻止 beforeunload 错误保存
+            searchText: null,
+            lastBatch: null,
+            hasExported: false,
         };
 
-        // 主区域话术高亮搜索状态：q 为关键词，matches 为 [{ci, mi}]，cur 为当前匹配下标
         const search = { q: '', matches: [], cur: -1 };
 
         const $ = id => document.getElementById(id);
@@ -651,12 +676,10 @@
             search.q = ''; search.matches = []; search.cur = -1;
             state.hasExported = false;
 
-            // 恢复本地暂存的修改
             restoreEdits();
 
             $('filter').disabled = false;
-            $('btnExportFull').disabled = false;
-            $('btnExportChangesCombined').disabled = false;
+            $('btnExportData').disabled = false;
 
             renderSidebar();
             selectConv(0);
@@ -668,7 +691,7 @@
         let saveTimer = null;
         function scheduleSave() {
             clearTimeout(saveTimer);
-            if (state.hasExported) return; // 如果刚刚导出，暂时不保存
+            if (state.hasExported) return;
             saveTimer = setTimeout(() => {
                 if (state.edits.size > 0) {
                     localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
@@ -684,7 +707,6 @@
             } catch (e) { /* 忽略损坏的暂存 */ }
         }
 
-        // 导出成功后重置界面和缓存
         function resetAfterExport() {
             clearTimeout(saveTimer);
             state.hasExported = true;
@@ -716,7 +738,6 @@
             const q = search.q.trim().toLowerCase();
             const filter = $('filter').value;
             if (q && !state.searchText) buildSearchText();
-            // 一次性拼 innerHTML，避免几万条会话逐个建 DOM 导致卡顿；点击用事件委托
             const html = [];
             state.data.forEach((conv, i) => {
                 const mod = convEditCount(i);
@@ -755,7 +776,6 @@
         }
 
         function groupTurns(msgs) {
-            // 贪心分组：遇到 user 开新一轮；非 user 归入当前轮（无当前轮则自成一轮）
             const turns = []; let cur = null;
             for (let i = 1; i < msgs.length; i++) {
                 if (msgs[i].role === 'user' || !cur) { cur = []; turns.push(cur); }
@@ -786,7 +806,7 @@
             btnDown.addEventListener('click', () => jumpToMatch(search.cur + 1));
             const cnt = el('span', 'count'); cnt.id = 'matchCount';
             sg.append(si, btnUp, btnDown, cnt);
-            // 批量替换区域（和搜索关键词 q 联动）
+
             const rg = el('div', 'replace-group');
             const ri = el('input'); ri.id = 'replaceInput'; ri.placeholder = '替换为';
             ri.addEventListener('keydown', e => { if (e.key === 'Enter') doBatchReplace(); });
@@ -807,7 +827,6 @@
             head.append(sg, title, btnPrev, btnNext);
             main.append(head);
 
-            // system 卡片（只读、可折叠）
             const sysCard = el('div', 'sys-card');
             sysCard.dataset.key = ci + ':0';
             const sysHead = el('div', 'sys-head');
@@ -823,7 +842,6 @@
             sysCard.append(sysHead, sysBody);
             main.append(sysCard);
 
-            // 按轮次成对渲染
             groupTurns(msgs).forEach((turn, t) => {
                 const card = el('div', 'turn');
                 const th = el('div', 'turn-head'); th.textContent = '第 ' + (t + 1) + ' 轮';
@@ -885,7 +903,6 @@
             const isMod = ta.value !== orig;
             if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
 
-            // 只要用户再次开始编辑，取消“刚导出”的标记，重新启用自动暂存
             state.hasExported = false;
 
             wrap.classList.toggle('modified', isMod);
@@ -917,7 +934,6 @@
             }
             return out + escapeHTML(text.slice(last)) + ' ';
         }
-        // 逐字对比原文与当前文本，返回当前文本中改动区间的 [start, end)
         function diffSpan(orig, cur) {
             let s = 0;
             const minLen = Math.min(orig.length, cur.length);
@@ -926,7 +942,6 @@
             while (e > s && o > s && orig[o - 1] === cur[e - 1]) { e--; o--; }
             return [s, e];
         }
-        // 生成背景层高亮：改动文字绿色（mark.d），搜索命中黄色（mark），重叠时搜索优先
         function renderBackdropHTML(text, orig, q) {
             const cover = new Array(text.length).fill(null);
             if (orig !== undefined && orig !== text) {
@@ -990,15 +1005,14 @@
             return res;
         }
 
-        /* ---------- 批量替换（基于当前搜索关键词 q） ---------- */
+        /* ---------- 批量替换 ---------- */
         function currentContentOf(ci, mi) {
             const k = keyOf(ci, mi);
             if (state.edits.has(k)) return state.edits.get(k);
             return state.data[ci].messages[mi].content;
         }
-        // 扫描将被批量替换的条目（跳过 system）
         function scanBatchReplace(q, replacement) {
-            const result = [];  // [ { ci, mi, old, new } ]
+            const result = [];
             if (!q || !state.data) return result;
             state.data.forEach((conv, ci) => {
                 conv.messages.forEach((m, mi) => {
@@ -1011,7 +1025,7 @@
             });
             return result;
         }
-        let batchPending = null;   // 等待用户确认的批量替换结果
+        let batchPending = null;
         function flashMsg(text) {
             const t = $('progressText'); const old = t.textContent;
             t.textContent = text; setTimeout(() => { t.textContent = old; }, 2200);
@@ -1023,7 +1037,7 @@
             if (replacement === '') { flashMsg('请在「替换为」框里填新内容'); return; }
             const hits = scanBatchReplace(q, replacement);
             if (!hits.length) { flashMsg('当前关键词在所有 user/assistant 消息中没有匹配'); return; }
-            // 生成预览
+
             const convIds = new Set(hits.map(h => h.ci));
             const summary = `关键词「${q}」 → 替换为「${replacement}」\n影响 ${convIds.size} 条会话，共 ${hits.length} 处将被替换`;
             $('replaceSummary').textContent = summary;
@@ -1046,15 +1060,13 @@
             const undoEntries = [];
             hits.forEach(({ ci, mi, old, new: rep }) => {
                 const k = keyOf(ci, mi);
-                // 旧内容（用来 undo）：如果 edits 里已经存了值，undo 前的"原值"就是那个值
                 const had = state.edits.has(k);
                 if (rep === state.data[ci].messages[mi].content) {
-                    // 替换后等于原始内容 → 从 edits 里移除，恢复到原始
                     state.edits.delete(k);
                 } else {
                     state.edits.set(k, rep);
                 }
-                undoEntries.push([k, old, had]);  // undo: 恢复到 old；had=true 表示之前有 edits
+                undoEntries.push([k, old, had]);
             });
             state.lastBatch = undoEntries;
             batchPending = null;
@@ -1081,8 +1093,6 @@
         }
         function refreshAfterBatch() {
             if (state.current < 0) state.current = 0;
-
-            // 确保批量替换也算作编辑，重置导出标记
             state.hasExported = false;
 
             renderMain();
@@ -1092,7 +1102,6 @@
             refreshHighlights();
             updateMatchUI();
             updateProgress();
-            // 刷新受影响会话的侧栏徽标
             const affected = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0])));
             affected.forEach(ci => refreshSidebarItem(ci));
             const b = document.querySelector('.btn-undo');
@@ -1126,7 +1135,6 @@
             const target = $('main').querySelector(`[data-key="${ci}:${mi}"]`);
             if (!target) { updateMatchUI(); return; }
             target.classList.add('cur-match');
-            // 命中在折叠的 system 里时先展开，确保高亮可见
             if (mi === 0) {
                 const sysBody = target.querySelector('.sys-body');
                 const toggle = target.querySelector('.sys-head .link');
@@ -1135,7 +1143,6 @@
                     if (toggle) toggle.textContent = '收起';
                 }
             }
-            // 直接滚动到高亮句本身（而不是整条消息），居中显示确保一眼可见
             const mark = target.querySelector('.hl mark') || target.querySelector('.sys-body mark') || target;
             mark.scrollIntoView({ block: 'center', behavior: 'auto' });
             updateMatchUI();
@@ -1146,7 +1153,7 @@
             }
         }
 
-        /* ---------- 标注人署名（内嵌弹窗，避免浏览器拦截原生 prompt/alert） ---------- */
+        /* ---------- 标注人署名 ---------- */
         let annotatorCallback = null;
         function getAnnotator() { return localStorage.getItem('pair_annotator_annotator') || ''; }
         function sanitizeName(s) { return s.trim().replace(/[\\/:*?"<>|\s]+/g, '_'); }
@@ -1175,114 +1182,119 @@
             if (e.key === 'Escape') closeAnnotatorModal();
         });
 
-        /* ---------- 导入 / 导出补丁 ---------- */
-
-        // 1. 导出完整文件
-        async function exportFullFile() {
+        /* ---------- 导出逻辑 ---------- */
+        // 点击统一导出按钮
+        $('btnExportData').addEventListener('click', () => {
             if (!getAnnotator()) {
-                openAnnotatorModal(exportFullFile);
+                openAnnotatorModal(() => { $('btnExportData').click(); });
+                return;
+            }
+            if (state.edits.size === 0) {
+                alert('当前没有任何修改内容可以导出。');
+                return;
+            }
+            // 默认全选
+            $('chkExportFull').checked = true;
+            $('chkExportPatch').checked = true;
+            $('exportModal').hidden = false;
+        });
+
+        $('exportCancel').addEventListener('click', () => {
+            $('exportModal').hidden = true;
+        });
+
+        // 确认导出
+        $('exportOk').addEventListener('click', () => {
+            const doFull = $('chkExportFull').checked;
+            const doPatch = $('chkExportPatch').checked;
+
+            if (!doFull && !doPatch) {
+                alert('请至少勾选一种导出格式！');
                 return;
             }
 
-            // 创建完整数据副本，应用所有修改
-            const fullData = JSON.parse(JSON.stringify(state.data));
+            $('exportModal').hidden = true;
+            executeExport(doFull, doPatch);
+        });
 
-            // 应用所有编辑修改
-            state.edits.forEach((content, key) => {
-                const [ci, mi] = key.split(':').map(Number);
-                if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
-                    fullData[ci].messages[mi].content = content;
-                }
-            });
-
-            const blob = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
+        function executeExport(doFull, doPatch) {
+            const annotator = getAnnotator();
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const annotator = getAnnotator();
-            const fname = `full_${state.fileName.replace(/\.json$/i, '')}_${annotator}_${ts}.json`;
-
-            triggerDownload(blob, fname);
-
-            // 彻底清理内存和本地缓存，重置界面
-            resetAfterExport();
-
-            alert(`完整文件已成功导出！\n\n文件名：${fname}\n\n该文件包含所有修改后的内容。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`);
-        }
-
-        // 2. 一键导出两个文件（带记录版 + 原格式版）
-        async function exportChangesCombined() {
-            if (!getAnnotator()) {
-                openAnnotatorModal(exportChangesCombined);
-                return;
-            }
-
-            const modifiedConvIndices = new Set();
-            state.edits.forEach((content, key) => {
-                const [ci, mi] = key.split(':').map(Number);
-                if (Number.isInteger(ci)) {
-                    modifiedConvIndices.add(ci);
-                }
-            });
-
-            if (modifiedConvIndices.size === 0) {
-                alert('当前没有修改内容可以导出。');
-                return;
-            }
-
-            const changesData = [];
-            modifiedConvIndices.forEach((ci) => {
-                if (ci < 0 || ci >= state.data.length) return;
-
-                const conv = JSON.parse(JSON.stringify(state.data[ci]));
-                state.edits.forEach((content, key) => {
-                    const [editCi, editMi] = key.split(':').map(Number);
-                    if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
-                        conv.messages[editMi].content = content;
-                    }
-                });
-                changesData.push(conv);
-            });
-
-            const d = new Date();
-            const p2 = n => String(n).padStart(2, '0');
-            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-
-            const annotator = getAnnotator();
             const baseName = String(state.fileName || 'data').replace(/\.json$/i, '').replace(/[\\/:*?"<>|]/g, '_');
             const safeAnnotator = String(annotator || 'unknown').replace(/[\\/:*?"<>|]/g, '_');
 
-            // --- 生成文件 1：带记录版 (Audit) ---
-            const payload = {
-                source: state.fileName,
-                data_sig: state.dataSig,
-                annotator: annotator,
-                exported_at: new Date().toISOString(),
-                edit_count: changesData.length,
-                conversations: changesData
-            };
-            const blobAudit = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-            const fnameAudit = `patch_audit_${baseName}_${safeAnnotator}_${ts}.json`;
+            let downloadCount = 0;
+            let exportedFiles = [];
 
-            // --- 生成文件 2：原格式版 (Raw) ---
-            const blobRaw = new Blob([JSON.stringify(changesData, null, 2)], { type: 'application/json' });
-            const fnameRaw = `patch_raw_${baseName}_${safeAnnotator}_${ts}.json`;
+            // 1. 生成并下载完整文件
+            if (doFull) {
+                const fullData = JSON.parse(JSON.stringify(state.data));
+                state.edits.forEach((content, key) => {
+                    const [ci, mi] = key.split(':').map(Number);
+                    if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
+                        fullData[ci].messages[mi].content = content;
+                    }
+                });
+                const blobFull = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
+                const fnameFull = `full_${baseName}_${safeAnnotator}_${ts}.json`;
+                triggerDownload(blobFull, fnameFull);
+                exportedFiles.push(fnameFull);
+                downloadCount++;
+            }
 
-            // 依次触发下载
-            triggerDownload(blobAudit, fnameAudit);
+            // 2. 生成并下载补丁文件
+            if (doPatch) {
+                const modifiedConvIndices = new Set();
+                state.edits.forEach((content, key) => {
+                    const [ci, mi] = key.split(':').map(Number);
+                    if (Number.isInteger(ci)) modifiedConvIndices.add(ci);
+                });
 
-            // 延迟 500ms 触发第二个下载，防止被浏览器拦截
-            setTimeout(() => {
-                triggerDownload(blobRaw, fnameRaw);
-            }, 500);
+                const changesData = [];
+                modifiedConvIndices.forEach((ci) => {
+                    if (ci < 0 || ci >= state.data.length) return;
+                    const conv = JSON.parse(JSON.stringify(state.data[ci]));
+                    state.edits.forEach((content, key) => {
+                        const [editCi, editMi] = key.split(':').map(Number);
+                        if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
+                            conv.messages[editMi].content = content;
+                        }
+                    });
+                    changesData.push(conv);
+                });
 
-            // 彻底清理内存和本地缓存，重置界面
+                const payload = {
+                    source: state.fileName,
+                    data_sig: state.dataSig,
+                    annotator: annotator,
+                    exported_at: new Date().toISOString(),
+                    edit_count: changesData.length,
+                    conversations: changesData
+                };
+                const blobAudit = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                const fnameAudit = `patch_audit_${baseName}_${safeAnnotator}_${ts}.json`;
+
+                const blobRaw = new Blob([JSON.stringify(changesData, null, 2)], { type: 'application/json' });
+                const fnameRaw = `patch_raw_${baseName}_${safeAnnotator}_${ts}.json`;
+
+                triggerDownload(blobAudit, fnameAudit);
+                setTimeout(() => triggerDownload(blobRaw, fnameRaw), 500);
+                exportedFiles.push(fnameAudit, fnameRaw);
+                downloadCount += 2;
+            }
+
+            // 3. 彻底清理并重置
             resetAfterExport();
 
-            alert(`已成功导出两个文件！\n\n1. 带记录版：${fnameAudit}\n2. 原格式版：${fnameRaw}\n\n如果只看到了一个文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`);
+            let msg = `已成功导出 ${downloadCount} 个文件！\n\n`;
+            exportedFiles.forEach(f => msg += `- ${f}\n`);
+            msg += `\n如果只看到了部分文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`;
+
+            alert(msg);
         }
 
-        // 抽离一个下载逻辑（最稳版本）
         function triggerDownload(blob, filename) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1295,7 +1307,6 @@
         }
 
         /* ---------- 事件绑定 ---------- */
-        // 会话列表点击委托（配合 innerHTML 批量渲染）
         $('convList').addEventListener('click', e => {
             const item = e.target.closest('.conv-item');
             if (item) selectConv(Number(item.dataset.ci));
@@ -1304,7 +1315,6 @@
         updateAnnotatorUI();
         $('filter').addEventListener('change', renderSidebar);
 
-        // 支持 ?data=xxx.json 直接加载（需通过 http 访问）
         (function () {
             const p = new URLSearchParams(location.search).get('data');
             if (!p) return;
@@ -1328,14 +1338,8 @@
             e.target.value = '';
         });
 
-        $('btnExportFull').addEventListener('click', exportFullFile);
-        // 绑定合并后的按钮
-        $('btnExportChangesCombined').addEventListener('click', exportChangesCombined);
-
-        // 在页面关闭或刷新前同步一次缓存
         window.addEventListener('beforeunload', () => {
             if (state.data) {
-                // 如果刚刚导出过（内存为空），则清理缓存，不再保存
                 if (state.edits.size > 0) {
                     localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
                 } else {
