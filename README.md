@@ -288,4 +288,3 @@ llm-sft-pair-annotator/
 
 **Q：多人同时标注同一份数据？**
 每人各自导出（文件名自带标注人），先用 `data_sig` 确认大家基于同一份原始文件；同一会话被多人改过时，比对 `patch_audit` 里的 `annotator` / `exported_at` 后人工裁定，或各自交付 `full_*` 完整文件再按人合并
-=======
