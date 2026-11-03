@@ -663,6 +663,7 @@
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
             edits: new Map(),             // 普通文本修改 "ci:mi" -> content
             structuralEdits: new Map(),   // 结构性修改 ci -> 修改后的整个 messages 数组
+            undoStacks: new Map(),        // 撤销快照栈 ci -> [ messages_snapshot, ... ]
             current: -1,
             searchText: null,
             lastBatch: null,
@@ -717,6 +718,7 @@
 
             state.edits = new Map();
             state.structuralEdits = new Map();
+            state.undoStacks = new Map();
             state.current = -1;
             state.searchText = null;
             search.q = ''; search.matches = []; search.cur = -1;
@@ -762,6 +764,7 @@
             state.hasExported = true;
             state.edits.clear();
             state.structuralEdits.clear();
+            state.undoStacks.clear();
             state.lastBatch = null;
             localStorage.removeItem(storageKey());
             const ri = $('replaceInput');
@@ -866,6 +869,18 @@
             bUndo.addEventListener('click', undoLastBatch);
             rg.append(ri, bRep, bUndo);
             sg.append(rg);
+
+            // 撤销增删按钮
+            const stack = state.undoStacks.get(ci) || [];
+            const btnUndoStruct = el('button', 'secondary');
+            btnUndoStruct.style.marginLeft = '8px';
+            btnUndoStruct.style.color = stack.length ? 'var(--primary)' : '';
+            btnUndoStruct.style.borderColor = stack.length ? 'var(--primary)' : '';
+            btnUndoStruct.textContent = stack.length ? `↶ 撤销增删 (${stack.length})` : `↶ 撤销增删`;
+            btnUndoStruct.disabled = stack.length === 0;
+            btnUndoStruct.title = '撤销当前会话的最近一次增删操作';
+            btnUndoStruct.addEventListener('click', () => undoStructuralChange(ci));
+            sg.append(btnUndoStruct);
 
             const btnPrev = el('button'); btnPrev.textContent = '← 上一条'; btnPrev.disabled = ci === 0;
             btnPrev.addEventListener('click', () => selectConv(ci - 1));
@@ -1002,7 +1017,7 @@
             }
 
             const ta = el('textarea');
-            ta.value = m.content; // 统一从 m 中取值
+            ta.value = m.content;
             ta.rows = 1;
             ta.addEventListener('input', () => { autoResize(ta); onEdit(ci, mi, ta, wrap); });
 
@@ -1019,12 +1034,57 @@
 
         function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
 
-        // ----- 结构修改逻辑 -----
+        // ----- 结构修改与撤销逻辑 -----
+
+        // 在增删前保存快照
+        function saveUndoSnapshot(ci) {
+            if (!state.undoStacks.has(ci)) state.undoStacks.set(ci, []);
+            const stack = state.undoStacks.get(ci);
+
+            // 获取当前完整的 messages (包含已经输入的文本修改)
+            const msgs = getConvMessages(ci);
+            // 深拷贝，防止引用被破坏
+            const snapshot = JSON.parse(JSON.stringify(msgs));
+            stack.push(snapshot);
+        }
+
+        function undoStructuralChange(ci) {
+            const stack = state.undoStacks.get(ci);
+            if (!stack || stack.length === 0) return;
+
+            const prevMsgs = stack.pop();
+
+            // 清理由于结构变化而被清空的旧文本修改
+            for (const key of [...state.edits.keys()]) {
+                if (Number(key.split(':')[0]) === ci) state.edits.delete(key);
+            }
+
+            // 如果快照里面的内容和原始数据完全一致，说明退到了初始状态
+            const origMsgs = state.data[ci].messages;
+            let isOriginal = false;
+            if (prevMsgs.length === origMsgs.length) {
+                isOriginal = prevMsgs.every((m, i) => m.content === origMsgs[i].content && m.role === origMsgs[i].role && !m.__is_new);
+            }
+
+            if (isOriginal) {
+                state.structuralEdits.delete(ci);
+            } else {
+                state.structuralEdits.set(ci, prevMsgs);
+            }
+
+            state.hasExported = false;
+            renderMain();
+            refreshSidebarItem(ci);
+            updateProgress();
+            scheduleSave();
+        }
+
         function deleteTurn(ci, mi) {
             const msgs = [...getConvMessages(ci)];
             if (msgs.length <= 3) return;
             if (!confirm('确定要删除这一轮对话吗？（包含 user 提问和 assistant 回答）')) return;
 
+            saveUndoSnapshot(ci);
             msgs.splice(mi, 2); // 删除 user 和 assistant
             saveStructuralEdit(ci, msgs);
         }
@@ -1034,6 +1094,7 @@
             if (insertIndex < 1) insertIndex = 1;
             if (insertIndex > msgs.length) insertIndex = msgs.length;
 
+            saveUndoSnapshot(ci);
             const newUser = { role: 'user', content: '', __is_new: true };
             const newAsst = { role: 'assistant', content: '', loss: 'True', __is_new: true };
 
