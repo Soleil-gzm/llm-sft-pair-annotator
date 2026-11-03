@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>话术微调标注工具</title>
-    <!-- 引入 JSZip 用于打包导出 -->
+    <!-- 引入 JSZip 用于打包导出和解压 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root {
@@ -585,28 +585,26 @@
         </div>
     </div>
 
-    <!-- 弹窗：补丁合并工具 -->
+    <!-- 弹窗：补丁合并工具 (纯拼接) -->
     <div id="mergeToolModal" class="modal-mask" hidden>
         <div class="modal" style="width: 500px;">
             <h3>合并补丁文件</h3>
-            <p class="modal-tip" style="color:#b45309;">
-                ⚠️ 注意：本功能将直接把所有交卷的 `.zip` 或 `.json` 补丁应用回原文件。<br>
-                请确保您已经选中了对应的<b>原始数据文件</b>。
+            <p class="modal-tip">
+                选择所有要合并的交卷压缩包 (.zip) 或补丁文件 (.json)。<br>
+                系统会自动提取其中的会话并拼接成一个长数组。
             </p>
 
             <div style="margin: 15px 0;">
-                <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">1. 选择原始数据文件 (JSON)</div>
-                <button id="btnMergeSelectOrig" class="secondary">选择原文件</button>
-                <span id="mergeOrigName" style="font-size: 0.8rem; color: var(--text2); margin-left: 8px;">未选择</span>
-                <input type="file" id="mergeOrigInput" accept=".json" hidden>
-            </div>
-
-            <div style="margin: 15px 0;">
-                <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">2. 选择要合并的交卷压缩包/补丁文件</div>
-                <button id="btnMergeSelectPatches" class="secondary">选择补丁 (支持多选)</button>
+                <button id="btnMergeSelectPatches" class="secondary">选择补丁文件 (支持多选)</button>
                 <span id="mergePatchesCount" style="font-size: 0.8rem; color: var(--text2); margin-left: 8px;">已选 0
                     个</span>
                 <input type="file" id="mergePatchesInput" accept=".zip,.json" multiple hidden>
+            </div>
+
+            <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 6px;">
+                <input type="checkbox" id="mergeDedup" checked style="width: 16px; height: 16px; cursor: pointer;">
+                <label for="mergeDedup"
+                    style="font-size: 0.85rem; cursor: pointer; user-select: none;">自动去重（剔除完全相同的会话）</label>
             </div>
 
             <div id="mergeToolLog"
@@ -1225,13 +1223,12 @@
         }
 
         // =========================================================
-        // 合并工具模块 (Web 版 batch_merge.py，兼容纯数组)
+        // 合并工具模块 (纯粹拼接与去重)
         // =========================================================
-        const mergeState = { origFile: null, origData: null, patchFiles: [], mergedResult: null };
+        const mergeState = { patchFiles: [] };
 
         function resetMergeModal() {
-            mergeState.origFile = null; mergeState.origData = null; mergeState.patchFiles = []; mergeState.mergedResult = null;
-            $('mergeOrigName').textContent = '未选择';
+            mergeState.patchFiles = [];
             $('mergePatchesCount').textContent = '已选 0 个';
             $('mergeToolLog').style.display = 'none';
             $('btnMergeDo').disabled = true;
@@ -1243,27 +1240,6 @@
         });
         $('mergeToolCancel').addEventListener('click', () => { $('mergeToolModal').hidden = true; });
 
-        // 选择原文件
-        $('btnMergeSelectOrig').addEventListener('click', () => $('mergeOrigInput').click());
-        $('mergeOrigInput').addEventListener('change', e => {
-            const f = e.target.files[0];
-            if (!f) return;
-            mergeState.origFile = f;
-            $('mergeOrigName').textContent = f.name;
-            const reader = new FileReader();
-            reader.onload = ev => {
-                try {
-                    mergeState.origData = JSON.parse(ev.target.result);
-                    checkMergeReady();
-                } catch (err) {
-                    alert('原文件不是合法 JSON');
-                    resetMergeModal();
-                }
-            };
-            reader.readAsText(f);
-            e.target.value = '';
-        });
-
         // 选择补丁文件
         $('btnMergeSelectPatches').addEventListener('click', () => $('mergePatchesInput').click());
         $('mergePatchesInput').addEventListener('change', e => {
@@ -1271,125 +1247,89 @@
             if (!files.length) return;
             mergeState.patchFiles.push(...files);
             $('mergePatchesCount').textContent = `已选 ${mergeState.patchFiles.length} 个`;
-            checkMergeReady();
+            $('btnMergeDo').disabled = false;
             e.target.value = '';
         });
 
-        function checkMergeReady() {
-            $('btnMergeDo').disabled = !(mergeState.origData && mergeState.patchFiles.length > 0);
-        }
-
         // 执行合并
         $('btnMergeDo').addEventListener('click', async () => {
-            if (!mergeState.origData || !mergeState.patchFiles.length) return;
+            if (!mergeState.patchFiles.length) return;
 
             $('btnMergeDo').disabled = true;
             const logBox = $('mergeToolLog');
             logBox.style.display = 'block';
-            logBox.innerHTML = '开始解析补丁包...';
+            logBox.innerHTML = '开始解析文件...';
 
-            const baseData = JSON.parse(JSON.stringify(mergeState.origData));
-            let appliedPatches = 0;
-            let totalChanges = 0;
+            const isDedup = $('mergeDedup').checked;
+            let mergedArray = [];
 
             for (const file of mergeState.patchFiles) {
                 try {
+                    let fileArrays = [];
+
                     if (file.name.endsWith('.zip')) {
                         logBox.innerHTML += `<br>解压 ${file.name}...`;
                         const zip = await JSZip.loadAsync(file);
-                        // 寻找 zip 内的补丁文件，兼容之前带的 audit/raw 命名
+                        // 优先寻找补丁文件
                         const jsonFiles = Object.keys(zip.files).filter(name => name.endsWith('.json') && (name.includes('补丁') || name.includes('patch')));
 
                         if (jsonFiles.length === 0) {
-                            logBox.innerHTML += `<br><span style="color:#b45309;">跳过：zip 内未找到补丁文件</span>`;
+                            logBox.innerHTML += `<br><span style="color:#b45309;">跳过：压缩包内未找到补丁文件</span>`;
                             continue;
                         }
 
                         for (const jName of jsonFiles) {
                             const text = await zip.files[jName].async('string');
-                            const patch = JSON.parse(text);
-                            const changes = applyPatchToData(baseData, patch);
-                            totalChanges += changes;
-                            appliedPatches++;
+                            const data = JSON.parse(text);
+                            // 兼容旧格式的 {conversations: []}
+                            fileArrays.push(Array.isArray(data) ? data : (data.conversations || []));
                         }
                     } else if (file.name.endsWith('.json')) {
                         logBox.innerHTML += `<br>读取 ${file.name}...`;
                         const text = await file.text();
-                        const patch = JSON.parse(text);
-                        const changes = applyPatchToData(baseData, patch);
-                        totalChanges += changes;
-                        appliedPatches++;
+                        const data = JSON.parse(text);
+                        fileArrays.push(Array.isArray(data) ? data : (data.conversations || []));
+                    }
+
+                    for (const arr of fileArrays) {
+                        if (Array.isArray(arr)) {
+                            mergedArray = mergedArray.concat(arr);
+                        }
                     }
                 } catch (err) {
                     logBox.innerHTML += `<br><span style="color:#b91c1c;">错误：${file.name} 解析失败 (${err.message})</span>`;
                 }
             }
 
+            const originalCount = mergedArray.length;
+            if (isDedup) {
+                logBox.innerHTML += `<br>正在去重...`;
+                // 基于字符串内容去重
+                const seen = new Set();
+                const uniqueArray = [];
+                for (const item of mergedArray) {
+                    const str = JSON.stringify(item);
+                    if (!seen.has(str)) {
+                        seen.add(str);
+                        uniqueArray.push(item);
+                    }
+                }
+                mergedArray = uniqueArray;
+                logBox.innerHTML += `<br>去重完成，移除了 ${originalCount - mergedArray.length} 条重复数据。`;
+            }
+
             // 生成并下载
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const outName = `${mergeState.origFile.name.replace(/\.json$/i, '')}_合并完成_${ts}.json`;
+            const outName = `合并补丁_${mergedArray.length}条_${ts}.json`;
 
-            const blob = new Blob([JSON.stringify(baseData, null, 2)], { type: 'application/json' });
+            const blob = new Blob([JSON.stringify(mergedArray, null, 2)], { type: 'application/json' });
             triggerDownload(blob, outName);
 
-            logBox.innerHTML += `<br><br><b>✅ 合并完成！</b><br>成功应用了 ${appliedPatches} 个补丁，修改了 ${totalChanges} 处内容。<br>文件已下载。`;
+            logBox.innerHTML += `<br><br><b>✅ 合并完成！</b><br>共拼接了 ${originalCount} 条会话，最终保留 ${mergedArray.length} 条。<br>文件已下载。`;
             $('btnMergeDo').disabled = false;
         });
-
-        // 核心合并逻辑：兼容纯数组和带 conversations 的对象
-        function applyPatchToData(baseData, patch) {
-            let changes = 0;
-
-            // 兼容旧格式 (带 conversations 包装)
-            if (patch && !Array.isArray(patch) && patch.conversations && Array.isArray(patch.conversations)) {
-                patch.conversations.forEach((conv, ci) => {
-                    if (ci >= baseData.length) return;
-                    conv.messages.forEach((msg, mi) => {
-                        if (mi < baseData[ci].messages.length && msg.content !== baseData[ci].messages[mi].content) {
-                            baseData[ci].messages[mi].content = msg.content;
-                            changes++;
-                        }
-                    });
-                });
-                return changes;
-            }
-
-            // 纯数组格式 (新格式)
-            if (Array.isArray(patch)) {
-                patch.forEach(patchConv => {
-                    // 由于没有 conv_idx，需要智能特征匹配
-                    let matchedIndex = -1;
-                    for (let i = 0; i < baseData.length; i++) {
-                        const baseConv = baseData[i];
-                        // 匹配规则：system 内容相同，且 messages 长度相同，且 role 序列一致
-                        if (baseConv.messages.length === patchConv.messages.length &&
-                            baseConv.messages[0]?.content === patchConv.messages[0]?.content &&
-                            baseConv.messages.every((m, idx) => m.role === patchConv.messages[idx].role)) {
-
-                            // 如果匹配到多个，可以进一步检查 user 消息内容是否高度相似
-                            if (matchedIndex !== -1) {
-                                // 这是一个提示，但不阻断，直接覆盖最新的匹配项
-                                console.warn('发现多个匹配的会话，可能会覆盖错误的数据');
-                            }
-                            matchedIndex = i;
-                        }
-                    }
-
-                    if (matchedIndex !== -1) {
-                        // 覆盖整个对话对象，保留原有数据结构
-                        baseData[matchedIndex] = patchConv;
-                        changes++;
-                    } else {
-                        throw new Error('无法在原文件中找到与补丁内容匹配的会话，请检查原文件是否正确');
-                    }
-                });
-                return changes;
-            }
-
-            throw new Error('不支持的补丁格式');
-        }
 
         // ----- 通用下载工具 -----
         function triggerDownload(blob, filename) {
