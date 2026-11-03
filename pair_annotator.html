@@ -18,6 +18,8 @@
             --user: #2563eb;
             --asst: #059669;
             --warn: #f59e0b;
+            --pink: #ec4899;
+            --pink-bg: #fdf2f8;
         }
 
         * {
@@ -85,6 +87,19 @@
             color: var(--primary);
             padding: 0;
             font-size: .78rem;
+        }
+
+        button.danger-link {
+            background: none;
+            color: #ef4444;
+            padding: 0;
+            font-size: .75rem;
+            cursor: pointer;
+            margin-left: auto;
+        }
+
+        button.danger-link:hover {
+            text-decoration: underline;
         }
 
         /* 弹窗通用 */
@@ -215,6 +230,16 @@
             background: var(--text2);
         }
 
+        .badge-pink {
+            background: var(--pink);
+            color: #fff;
+            border-radius: 4px;
+            font-size: .68rem;
+            padding: .05rem .35rem;
+            margin-left: 6px;
+            font-weight: bold;
+        }
+
         main {
             flex: 1;
             overflow-y: auto;
@@ -327,6 +352,15 @@
             overflow: hidden;
         }
 
+        .turn {
+            transition: border-color 0.2s ease;
+        }
+
+        .turn.is-new-turn {
+            border-color: #fbcfe8;
+            background-color: var(--pink-bg);
+        }
+
         .sys-head,
         .turn-head {
             padding: .4rem .8rem;
@@ -336,6 +370,11 @@
             display: flex;
             gap: .5rem;
             align-items: center;
+        }
+
+        .is-new-turn .turn-head {
+            border-bottom-color: #fbcfe8;
+            color: var(--pink);
         }
 
         .sys-body {
@@ -622,7 +661,8 @@
         // ----- 核心状态 -----
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
-            edits: new Map(),
+            edits: new Map(),             // 普通文本修改 "ci:mi" -> content
+            structuralEdits: new Map(),   // 结构性修改 ci -> 修改后的整个 messages 数组
             current: -1,
             searchText: null,
             lastBatch: null,
@@ -676,6 +716,7 @@
             state.dataSig = `${data.length}:${state.totalMsgs}:${sysLen}:${lastLen}`;
 
             state.edits = new Map();
+            state.structuralEdits = new Map();
             state.current = -1;
             state.searchText = null;
             search.q = ''; search.matches = []; search.cur = -1;
@@ -696,8 +737,11 @@
             clearTimeout(saveTimer);
             if (state.hasExported) return;
             saveTimer = setTimeout(() => {
-                if (state.edits.size > 0) {
-                    localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+                if (state.edits.size > 0 || state.structuralEdits.size > 0) {
+                    localStorage.setItem(storageKey(), JSON.stringify({
+                        edits: [...state.edits],
+                        structuralEdits: [...state.structuralEdits]
+                    }));
                 } else {
                     localStorage.removeItem(storageKey());
                 }
@@ -706,13 +750,18 @@
         function restoreEdits() {
             try {
                 const raw = localStorage.getItem(storageKey());
-                if (raw) state.edits = new Map(JSON.parse(raw));
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    state.edits = new Map(parsed.edits || []);
+                    state.structuralEdits = new Map(parsed.structuralEdits || []);
+                }
             } catch (e) { /* 忽略 */ }
         }
         function resetAfterExport() {
             clearTimeout(saveTimer);
             state.hasExported = true;
             state.edits.clear();
+            state.structuralEdits.clear();
             state.lastBatch = null;
             localStorage.removeItem(storageKey());
             const ri = $('replaceInput');
@@ -725,13 +774,15 @@
         // ----- 侧栏渲染 -----
         function convEditCount(ci) {
             let n = 0;
+            if (state.structuralEdits.has(ci)) return 1; // 结构变了视为有一处修改
             for (const k of state.edits.keys()) if (Number(k.split(':')[0]) === ci) n++;
             return n;
         }
         function buildSearchText() {
-            state.searchText = state.data.map((c, ci) =>
-                c.messages.map((m, mi) => currentContentOf(ci, mi)).join('\n').toLowerCase()
-            );
+            state.searchText = state.data.map((c, ci) => {
+                const msgs = getConvMessages(ci);
+                return msgs.map((m, mi) => currentContentOf(ci, mi)).join('\n').toLowerCase();
+            });
         }
         function renderSidebar() {
             const list = $('convList');
@@ -744,11 +795,15 @@
                 if (filter === 'modified' && !mod) return;
                 if (filter === 'unmodified' && mod) return;
                 if (q && !String(i).includes(q) && !state.searchText[i].includes(q)) return;
-                const firstUser = conv.messages.find(m => m.role === 'user');
+
+                // 预览内容也从当前实际数据取
+                let previewMsgs = getConvMessages(i);
+                const firstUser = previewMsgs.find(m => m.role === 'user');
                 const preview = firstUser ? firstUser.content : '(无 user 消息)';
+
                 html.push(
                     `<div class="conv-item${i === state.current ? ' active' : ''}" data-ci="${i}">` +
-                    `<div class="meta"><span>#${i}</span><span>${(conv.messages.length - 1) / 2} 轮</span>` +
+                    `<div class="meta"><span>#${i}</span><span>${(previewMsgs.length - 1) / 2} 轮</span>` +
                     (mod ? `<span class="badge">改 ${mod}</span>` : '') +
                     `</div><div class="preview">${escapeHTML(preview)}</div></div>`
                 );
@@ -774,20 +829,17 @@
             if (item) { item.classList.add('active'); item.scrollIntoView({ block: 'nearest' }); }
             renderMain();
         }
-        function groupTurns(msgs) {
-            const turns = []; let cur = null;
-            for (let i = 1; i < msgs.length; i++) {
-                if (msgs[i].role === 'user' || !cur) { cur = []; turns.push(cur); }
-                cur.push(i);
-            }
-            return turns;
+
+        function getConvMessages(ci) {
+            if (state.structuralEdits.has(ci)) return state.structuralEdits.get(ci);
+            return state.data[ci].messages;
         }
+
         function renderMain() {
             const main = $('main');
             main.textContent = '';
             const ci = state.current;
-            const conv = state.data[ci];
-            const msgs = conv.messages;
+            const msgs = getConvMessages(ci);
 
             const head = el('div', 'conv-header');
             const sg = el('div', 'search-group');
@@ -825,6 +877,7 @@
             head.append(sg, title, btnPrev, btnNext);
             main.append(head);
 
+            // system 卡片（保护逻辑：永远只读，不可删除）
             const sysCard = el('div', 'sys-card');
             sysCard.dataset.key = ci + ':0';
             const sysHead = el('div', 'sys-head');
@@ -840,22 +893,72 @@
             sysCard.append(sysHead, sysBody);
             main.append(sysCard);
 
-            groupTurns(msgs).forEach((turn, t) => {
-                const card = el('div', 'turn');
-                const th = el('div', 'turn-head'); th.textContent = '第 ' + (t + 1) + ' 轮';
+            // 轮次列表
+            let turnCount = 1;
+            for (let mi = 1; mi < msgs.length; mi += 2) {
+                const isNew = msgs[mi].__is_new || (msgs[mi + 1] && msgs[mi + 1].__is_new);
+                const card = el('div', 'turn' + (isNew ? ' is-new-turn' : ''));
+
+                const th = el('div', 'turn-head');
+                const label = el('span');
+                label.textContent = `第 ${turnCount} 轮`;
+
+                th.append(label);
+
+                if (isNew) {
+                    const nb = el('span', 'badge-pink');
+                    nb.textContent = '新增';
+                    th.append(nb);
+                }
+
+                const btnDel = el('button', 'danger-link');
+                btnDel.textContent = '🗑 删除本轮';
+                btnDel.title = '删除此轮对话（包含 user 和 assistant）';
+                // 只剩最后一轮时禁用删除（保证至少有一轮）
+                if (msgs.length <= 3) {
+                    btnDel.disabled = true;
+                    btnDel.style.opacity = 0.3;
+                    btnDel.style.cursor = 'not-allowed';
+                } else {
+                    btnDel.addEventListener('click', () => deleteTurn(ci, mi));
+                }
+                th.append(btnDel);
+
                 card.append(th);
-                turn.forEach(mi => card.append(msgBlock(ci, mi)));
+                card.append(msgBlock(ci, mi));
+                if (mi + 1 < msgs.length) card.append(msgBlock(ci, mi + 1));
+
                 main.append(card);
-            });
+                turnCount++;
+            }
+
+            // 底部添加按钮
+            const addCard = el('div', 'turn');
+            const addBtn = el('button', 'secondary');
+            addBtn.style = 'width: 100%; padding: 12px; border-style: dashed; border-color: var(--primary); color: var(--primary); font-weight: 600;';
+            addBtn.textContent = '＋ 添加新轮次';
+            addBtn.addEventListener('click', () => addTurn(ci));
+            addCard.append(addBtn);
+            main.append(addCard);
+
             main.querySelectorAll('textarea').forEach(autoResize);
             refreshHighlights();
             updateMatchUI();
         }
+
         function msgBlock(ci, mi) {
-            const m = state.data[ci].messages[mi];
+            const msgs = getConvMessages(ci);
+            const m = msgs[mi];
             const k = keyOf(ci, mi);
-            const edited = state.edits.get(k);
-            const isMod = edited !== undefined && edited !== m.content;
+
+            const isStructural = state.structuralEdits.has(ci);
+            const edited = isStructural ? m.content : state.edits.get(k);
+
+            // 对于新增的轮次，原始文件里是不存在的，所以原文为空
+            const origMessage = state.data[ci].messages[mi];
+            const origContent = origMessage ? origMessage.content : undefined;
+
+            const isMod = isStructural ? (origContent === undefined || edited !== origContent) : (edited !== undefined && edited !== origContent);
 
             const wrap = el('div', 'msg' + (isMod ? ' modified' : ''));
             wrap.dataset.key = k;
@@ -868,12 +971,25 @@
             const modBadge = el('span', 'badge mod-badge'); modBadge.textContent = '已修改';
             head.append(modBadge);
             const spacer = el('span', 'spacer'); head.append(spacer);
-            const btnOrig = el('button', 'link only-mod'); btnOrig.textContent = '原文';
-            const btnRevert = el('button', 'link only-mod'); btnRevert.textContent = '还原';
-            head.append(btnOrig, btnRevert);
+
+            if (origContent !== undefined) {
+                const btnOrig = el('button', 'link only-mod'); btnOrig.textContent = '原文';
+                const btnRevert = el('button', 'link only-mod'); btnRevert.textContent = '还原';
+                head.append(btnOrig, btnRevert);
+                const orig = el('div', 'orig');
+                orig.textContent = origContent;
+                btnOrig.addEventListener('click', () => orig.classList.toggle('show'));
+                btnRevert.addEventListener('click', () => {
+                    ta.value = origContent; autoResize(ta); onEdit(ci, mi, ta, wrap);
+                });
+                wrap.append(head);
+                wrap._origDiv = orig;
+            } else {
+                wrap.append(head);
+            }
 
             const ta = el('textarea');
-            ta.value = isMod ? edited : m.content;
+            ta.value = edited !== undefined ? edited : m.content;
             ta.rows = 1;
             ta.addEventListener('input', () => { autoResize(ta); onEdit(ci, mi, ta, wrap); });
 
@@ -883,20 +999,65 @@
             bd.append(hl);
             taWrap.append(bd, ta);
 
-            const orig = el('div', 'orig');
-            orig.textContent = m.content;
-            btnOrig.addEventListener('click', () => orig.classList.toggle('show'));
-            btnRevert.addEventListener('click', () => { ta.value = m.content; autoResize(ta); onEdit(ci, mi, ta, wrap); });
-
-            wrap.append(head, taWrap, orig);
+            wrap.append(taWrap);
+            if (wrap._origDiv) wrap.append(wrap._origDiv);
             return wrap;
         }
+
         function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+
+        // ----- 结构修改逻辑 -----
+        function deleteTurn(ci, mi) {
+            const msgs = [...getConvMessages(ci)];
+            if (msgs.length <= 3) return;
+            if (!confirm('确定要删除这一轮对话吗？（包含 user 提问和 assistant 回答）')) return;
+
+            msgs.splice(mi, 2); // 删除 user 和 assistant
+            saveStructuralEdit(ci, msgs);
+        }
+
+        function addTurn(ci) {
+            const msgs = [...getConvMessages(ci)];
+            // 严格匹配格式：user 无 loss，assistant 带字符串 "True"
+            // 内部使用 __is_new 标记，导出时自动剥离
+            msgs.push({ role: 'user', content: '', __is_new: true });
+            msgs.push({ role: 'assistant', content: '', loss: 'True', __is_new: true });
+            saveStructuralEdit(ci, msgs);
+        }
+
+        function saveStructuralEdit(ci, newMsgs) {
+            state.structuralEdits.set(ci, newMsgs);
+
+            // 清理该会话旧的文本修改记录，因为索引已变
+            for (const key of [...state.edits.keys()]) {
+                if (Number(key.split(':')[0]) === ci) state.edits.delete(key);
+            }
+
+            state.hasExported = false;
+            renderMain();
+            refreshSidebarItem(ci);
+            updateProgress();
+            scheduleSave();
+        }
+
+        // ----- 文本编辑逻辑 -----
         function onEdit(ci, mi, ta, wrap) {
-            const orig = state.data[ci].messages[mi].content;
-            const k = keyOf(ci, mi);
-            const isMod = ta.value !== orig;
-            if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
+            const msgs = getConvMessages(ci);
+            const origMessage = state.data[ci].messages[mi];
+            const orig = origMessage ? origMessage.content : undefined;
+
+            const isStructural = state.structuralEdits.has(ci);
+            const isMod = isStructural ? (orig === undefined || ta.value !== orig) : (ta.value !== orig);
+
+            if (isStructural) {
+                msgs[mi].content = ta.value;
+                state.structuralEdits.set(ci, msgs);
+            } else {
+                const k = keyOf(ci, mi);
+                if (ta.value !== orig) state.edits.set(k, ta.value);
+                else state.edits.delete(k);
+            }
+
             state.hasExported = false;
             wrap.classList.toggle('modified', isMod);
             const hl = wrap.querySelector('.backdrop .hl');
@@ -905,10 +1066,14 @@
             updateProgress();
             scheduleSave();
         }
+
         function updateProgress() {
             if (!state.data) return;
-            const convs = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0]))).size;
-            $('progressText').textContent = `${state.fileName} · 已修改会话 ${convs}/${state.data.length} · 已修改消息 ${state.edits.size}`;
+            const convs = new Set([
+                ...[...state.edits.keys()].map(k => Number(k.split(':')[0])),
+                ...state.structuralEdits.keys()
+            ]).size;
+            $('progressText').textContent = `${state.fileName} · 已修改会话 ${convs}/${state.data.length}`;
         }
 
         // ----- 搜索与高亮 -----
@@ -961,9 +1126,10 @@
         function refreshHighlights() {
             if (!state.data || state.current < 0) return;
             const q = search.q;
+            const msgs = getConvMessages(state.current);
             const sysBody = $('main').querySelector('.sys-body');
             if (sysBody) {
-                const content = state.data[state.current].messages[0].content;
+                const content = msgs[0].content;
                 if (q) sysBody.innerHTML = highlightHTML(content, q);
                 else sysBody.textContent = content;
             }
@@ -972,7 +1138,8 @@
                 const hl = wrap.querySelector('.backdrop .hl');
                 if (ta && hl) {
                     const [ci, mi] = wrap.dataset.key.split(':').map(Number);
-                    hl.innerHTML = renderBackdropHTML(ta.value, state.data[ci].messages[mi].content, q);
+                    const orig = state.data[ci]?.messages[mi]?.content;
+                    hl.innerHTML = renderBackdropHTML(ta.value, orig, q);
                 }
             });
         }
@@ -984,12 +1151,21 @@
         function clearCurMatch() {
             document.querySelectorAll('.cur-match').forEach(e => e.classList.remove('cur-match'));
         }
+        function currentContentOf(ci, mi) {
+            if (state.structuralEdits.has(ci)) {
+                return state.structuralEdits.get(ci)[mi]?.content || '';
+            }
+            const k = keyOf(ci, mi);
+            if (state.edits.has(k)) return state.edits.get(k);
+            return state.data[ci].messages[mi]?.content || '';
+        }
         function computeMatches(q) {
             const res = [];
             if (!q || !state.data) return res;
             const lq = q.toLowerCase();
             state.data.forEach((conv, ci) => {
-                conv.messages.forEach((m, mi) => {
+                const msgs = getConvMessages(ci);
+                msgs.forEach((m, mi) => {
                     if (currentContentOf(ci, mi).toLowerCase().includes(lq)) res.push({ ci, mi });
                 });
             });
@@ -1040,16 +1216,12 @@
         }
 
         // ----- 批量替换 -----
-        function currentContentOf(ci, mi) {
-            const k = keyOf(ci, mi);
-            if (state.edits.has(k)) return state.edits.get(k);
-            return state.data[ci].messages[mi].content;
-        }
         function scanBatchReplace(q, replacement) {
             const result = [];
             if (!q || !state.data) return result;
             state.data.forEach((conv, ci) => {
-                conv.messages.forEach((m, mi) => {
+                const msgs = getConvMessages(ci);
+                msgs.forEach((m, mi) => {
                     if (m.role === 'system') return;
                     const old = currentContentOf(ci, mi);
                     if (old.indexOf(q) === -1) return;
@@ -1091,16 +1263,30 @@
             const { hits } = batchPending;
             const undoEntries = [];
             hits.forEach(({ ci, mi, old, new: rep }) => {
-                const k = keyOf(ci, mi);
-                const had = state.edits.has(k);
-                if (rep === state.data[ci].messages[mi].content) state.edits.delete(k);
-                else state.edits.set(k, rep);
-                undoEntries.push([k, old, had]);
+                const msgs = getConvMessages(ci);
+                const orig = state.data[ci].messages[mi] ? state.data[ci].messages[mi].content : undefined;
+
+                if (state.structuralEdits.has(ci)) {
+                    msgs[mi].content = rep;
+                    state.structuralEdits.set(ci, msgs);
+                } else {
+                    const k = keyOf(ci, mi);
+                    if (rep === orig) state.edits.delete(k);
+                    else state.edits.set(k, rep);
+                }
             });
-            state.lastBatch = undoEntries;
             batchPending = null;
             $('replaceModal').hidden = true;
-            refreshAfterBatch();
+            state.hasExported = false;
+            renderMain();
+            buildSearchText();
+            search.matches = computeMatches(search.q);
+            search.cur = search.matches.length ? 0 : -1;
+            refreshHighlights();
+            updateMatchUI();
+            updateProgress();
+            renderSidebar();
+            scheduleSave();
         });
         $('replaceCancel') && $('replaceCancel').addEventListener('click', () => {
             batchPending = null;
@@ -1110,27 +1296,18 @@
             if (!state.lastBatch) return;
             state.lastBatch.forEach(([k, old, had]) => {
                 const [ci, mi] = k.split(':').map(Number);
+                if (state.structuralEdits.has(ci)) return;
                 const orig = state.data[ci].messages[mi].content;
                 if (old === orig) state.edits.delete(k);
                 else state.edits.set(k, old);
             });
             state.lastBatch = null;
-            refreshAfterBatch();
-        }
-        function refreshAfterBatch() {
-            if (state.current < 0) state.current = 0;
-            state.hasExported = false;
             renderMain();
             buildSearchText();
             search.matches = computeMatches(search.q);
-            search.cur = search.matches.length ? 0 : -1;
             refreshHighlights();
-            updateMatchUI();
             updateProgress();
-            const affected = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0])));
-            affected.forEach(ci => refreshSidebarItem(ci));
-            const b = document.querySelector('.btn-undo');
-            if (b) b.disabled = !state.lastBatch;
+            renderSidebar();
             scheduleSave();
         }
 
@@ -1162,11 +1339,21 @@
         });
 
         // =========================================================
-        // 导出交卷模块 (纯数组格式输出)
+        // 数据清理与导出交卷
         // =========================================================
+
+        // 深度清理内部标记，保证导出干净
+        function cleanForExport(msgs) {
+            return msgs.map(m => {
+                const copy = { ...m };
+                delete copy.__is_new;
+                return copy;
+            });
+        }
+
         async function triggerExportZip() {
             if (!getAnnotator()) { openAnnotatorModal(triggerExportZip); return; }
-            if (state.edits.size === 0) { alert('当前没有任何修改内容可以交卷。'); return; }
+            if (state.edits.size === 0 && state.structuralEdits.size === 0) { alert('当前没有任何修改内容可以交卷。'); return; }
 
             const annotator = getAnnotator();
             const d = new Date();
@@ -1181,6 +1368,13 @@
 
             // 1. 生成完整文件 (Full)
             const fullData = JSON.parse(JSON.stringify(state.data));
+            // 先应用结构修改
+            state.structuralEdits.forEach((msgs, ci) => {
+                if (ci >= 0 && ci < fullData.length) {
+                    fullData[ci].messages = cleanForExport(msgs);
+                }
+            });
+            // 再应用文本修改
             state.edits.forEach((content, key) => {
                 const [ci, mi] = key.split(':').map(Number);
                 if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
@@ -1189,16 +1383,23 @@
             });
             zip.file(`${baseName}_${safeAnnotator}_${ts}_完整版.json`, JSON.stringify(fullData, null, 2));
 
-            // 2. 生成修改补丁 (纯数组，不包含元数据，与原文件格式一致)
-            const modifiedConvIndices = new Set();
-            state.edits.forEach((content, key) => {
-                const [ci, mi] = key.split(':').map(Number);
-                if (Number.isInteger(ci)) modifiedConvIndices.add(ci);
-            });
+            // 2. 生成修改补丁 (纯数组，兼容结构修改)
+            const modifiedConvIndices = new Set([
+                ...[...state.edits.keys()].map(k => Number(k.split(':')[0])),
+                ...state.structuralEdits.keys()
+            ]);
+
             const changesData = [];
             modifiedConvIndices.forEach((ci) => {
                 if (ci < 0 || ci >= state.data.length) return;
                 const conv = JSON.parse(JSON.stringify(state.data[ci]));
+
+                // 若有结构修改，直接使用新的 messages 并清理标记
+                if (state.structuralEdits.has(ci)) {
+                    conv.messages = cleanForExport(state.structuralEdits.get(ci));
+                }
+
+                // 应用该会话的文本修改（针对未发生结构修改，但发生文本修改的情况）
                 state.edits.forEach((content, key) => {
                     const [editCi, editMi] = key.split(':').map(Number);
                     if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
@@ -1208,7 +1409,6 @@
                 changesData.push(conv);
             });
 
-            // 直接序列化数组
             zip.file(`${baseName}_${safeAnnotator}_${ts}_补丁.json`, JSON.stringify(changesData, null, 2));
 
             // 打包下载
@@ -1240,7 +1440,6 @@
         });
         $('mergeToolCancel').addEventListener('click', () => { $('mergeToolModal').hidden = true; });
 
-        // 选择补丁文件
         $('btnMergeSelectPatches').addEventListener('click', () => $('mergePatchesInput').click());
         $('mergePatchesInput').addEventListener('change', e => {
             const files = Array.from(e.target.files);
@@ -1251,7 +1450,6 @@
             e.target.value = '';
         });
 
-        // 执行合并
         $('btnMergeDo').addEventListener('click', async () => {
             if (!mergeState.patchFiles.length) return;
 
@@ -1270,7 +1468,6 @@
                     if (file.name.endsWith('.zip')) {
                         logBox.innerHTML += `<br>解压 ${file.name}...`;
                         const zip = await JSZip.loadAsync(file);
-                        // 优先寻找补丁文件
                         const jsonFiles = Object.keys(zip.files).filter(name => name.endsWith('.json') && (name.includes('补丁') || name.includes('patch')));
 
                         if (jsonFiles.length === 0) {
@@ -1281,7 +1478,6 @@
                         for (const jName of jsonFiles) {
                             const text = await zip.files[jName].async('string');
                             const data = JSON.parse(text);
-                            // 兼容旧格式的 {conversations: []}
                             fileArrays.push(Array.isArray(data) ? data : (data.conversations || []));
                         }
                     } else if (file.name.endsWith('.json')) {
@@ -1304,7 +1500,6 @@
             const originalCount = mergedArray.length;
             if (isDedup) {
                 logBox.innerHTML += `<br>正在去重...`;
-                // 基于字符串内容去重
                 const seen = new Set();
                 const uniqueArray = [];
                 for (const item of mergedArray) {
@@ -1318,7 +1513,6 @@
                 logBox.innerHTML += `<br>去重完成，移除了 ${originalCount - mergedArray.length} 条重复数据。`;
             }
 
-            // 生成并下载
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
@@ -1331,7 +1525,6 @@
             $('btnMergeDo').disabled = false;
         });
 
-        // ----- 通用下载工具 -----
         function triggerDownload(blob, filename) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -1368,8 +1561,11 @@
         $('btnExportZip').addEventListener('click', triggerExportZip);
 
         window.addEventListener('beforeunload', () => {
-            if (state.data && state.edits.size > 0) {
-                localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
+            if (state.data && (state.edits.size > 0 || state.structuralEdits.size > 0)) {
+                localStorage.setItem(storageKey(), JSON.stringify({
+                    edits: [...state.edits],
+                    structuralEdits: [...state.structuralEdits]
+                }));
             }
         });
     </script>
