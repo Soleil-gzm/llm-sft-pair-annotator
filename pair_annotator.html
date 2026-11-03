@@ -86,7 +86,7 @@
             background: none;
             color: var(--primary);
             padding: 0;
-            font-size: .78rem;
+            font-size: .75rem;
         }
 
         button.danger-link {
@@ -95,9 +95,9 @@
             padding: 0;
             font-size: .75rem;
             cursor: pointer;
-            margin-left: auto;
         }
 
+        button.link:hover,
         button.danger-link:hover {
             text-decoration: underline;
         }
@@ -796,7 +796,6 @@
                 if (filter === 'unmodified' && mod) return;
                 if (q && !String(i).includes(q) && !state.searchText[i].includes(q)) return;
 
-                // 预览内容也从当前实际数据取
                 let previewMsgs = getConvMessages(i);
                 const firstUser = previewMsgs.find(m => m.role === 'user');
                 const preview = firstUser ? firstUser.content : '(无 user 消息)';
@@ -911,8 +910,20 @@
                     th.append(nb);
                 }
 
+                const spacer = el('div'); spacer.style.flex = '1';
+                th.append(spacer);
+
+                // 插入按钮（在此轮下方插入）
+                const btnInsert = el('button', 'link');
+                btnInsert.textContent = '＋ 下方插入';
+                btnInsert.title = '在此轮下方插入一对新的问答';
+                btnInsert.addEventListener('click', () => insertTurn(ci, mi + 2));
+                th.append(btnInsert);
+
+                // 删除按钮
                 const btnDel = el('button', 'danger-link');
-                btnDel.textContent = '🗑 删除本轮';
+                btnDel.style.marginLeft = '8px';
+                btnDel.textContent = '🗑 删除';
                 btnDel.title = '删除此轮对话（包含 user 和 assistant）';
                 // 只剩最后一轮时禁用删除（保证至少有一轮）
                 if (msgs.length <= 3) {
@@ -932,12 +943,15 @@
                 turnCount++;
             }
 
-            // 底部添加按钮
+            // 底部追加按钮
             const addCard = el('div', 'turn');
+            addCard.style.border = 'none';
+            addCard.style.background = 'transparent';
+            addCard.style.marginTop = '12px';
             const addBtn = el('button', 'secondary');
-            addBtn.style = 'width: 100%; padding: 12px; border-style: dashed; border-color: var(--primary); color: var(--primary); font-weight: 600;';
-            addBtn.textContent = '＋ 添加新轮次';
-            addBtn.addEventListener('click', () => addTurn(ci));
+            addBtn.style = 'width: 100%; padding: 12px; border-style: dashed; border-color: var(--primary); color: var(--primary); font-weight: 600; background: var(--card);';
+            addBtn.textContent = '＋ 在末尾添加新轮次';
+            addBtn.addEventListener('click', () => insertTurn(ci, msgs.length));
             addCard.append(addBtn);
             main.append(addCard);
 
@@ -1016,12 +1030,17 @@
             saveStructuralEdit(ci, msgs);
         }
 
-        function addTurn(ci) {
+        function insertTurn(ci, insertIndex) {
             const msgs = [...getConvMessages(ci)];
+            // 边界保护
+            if (insertIndex < 1) insertIndex = 1;
+            if (insertIndex > msgs.length) insertIndex = msgs.length;
+
             // 严格匹配格式：user 无 loss，assistant 带字符串 "True"
-            // 内部使用 __is_new 标记，导出时自动剥离
-            msgs.push({ role: 'user', content: '', __is_new: true });
-            msgs.push({ role: 'assistant', content: '', loss: 'True', __is_new: true });
+            const newUser = { role: 'user', content: '', __is_new: true };
+            const newAsst = { role: 'assistant', content: '', loss: 'True', __is_new: true };
+
+            msgs.splice(insertIndex, 0, newUser, newAsst);
             saveStructuralEdit(ci, msgs);
         }
 
@@ -1399,7 +1418,7 @@
                     conv.messages = cleanForExport(state.structuralEdits.get(ci));
                 }
 
-                // 应用该会话的文本修改（针对未发生结构修改，但发生文本修改的情况）
+                // 应用该会话的文本修改
                 state.edits.forEach((content, key) => {
                     const [editCi, editMi] = key.split(':').map(Number);
                     if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
