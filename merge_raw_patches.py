@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""将多个 patch_raw_*.json 文件合并为一个总文件。
+"""将多个 patch_raw_*.json 文件合并为一个总文件（仅支持 raw_array 格式）。
+
+⚠️  已升级为通用版 merge_patches.py，支持全部 3 种格式（sparse_edits / recorded / raw_array），
+    以及 glob 模式、目录直接指定等，建议使用新版。
+
+旧版保留原因：兼容现有调用方。除文件名匹配（仅 patch_raw_*.json）外行为与新版一致。
 
 用法：
   python3 merge_raw_patches.py -d 补丁目录 -o 输出文件.json
-  python3 merge_raw_patches.py -d ./patches --dedup
 """
 import argparse
 import json

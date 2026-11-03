@@ -537,7 +537,7 @@
         <button id="btnOpen">打开数据文件</button>
         <button id="btnImportPatch" disabled>导入补丁合并</button>
         <button id="btnExportData" disabled>导出数据</button>
-        <button id="btnMergeRaw" class="secondary">⊞ 合并 Raw Patches</button>
+        <button id="btnMergeRaw" class="secondary">⊞ 合并补丁文件</button>
     </header>
     <div class="layout">
         <aside>
@@ -584,11 +584,11 @@
         </div>
     </div>
 
-    <!-- Raw Patches 合并面板 -->
+    <!-- 补丁合并面板（支持全部 3 种格式） -->
     <div id="mergeModal" class="modal-mask" hidden>
         <div class="modal" style="width: 620px;">
-            <h3>⊞ 合并 Raw Patches</h3>
-            <p class="modal-tip">选择多个 patch_raw_*.json 文件，合并为一个完整数组并可选去重。此操作独立于当前标注状态。</p>
+            <h3>⊞ 合并补丁文件</h3>
+            <p class="modal-tip">支持稀疏编辑 / 带记录 / 纯净数组三种格式的补丁，合并为一个完整数组并可选去重。<b>稀疏编辑格式</b>无法直接合并为完整数组，会在下方列出但不会并入结果。此操作独立于当前标注状态。</p>
 
             <div id="mergeWarnings" style="display:none"></div>
 
@@ -1242,86 +1242,34 @@
             }
 
             let appliedCount = 0;
-            let skippedCount = 0;
+            let skippedBounds = 0;
             let errorFiles = [];
 
             // 使用 for...of 保证按顺序应用
             for (const file of files) {
-                try {
-                    const text = await file.text();
-                    const patch = JSON.parse(text);
-                    let appliedInFile = 0;
-                    let conflict = false;
-
-                    // 格式 1: 旧版补丁 { edits: [{ conv_idx, msg_idx, content }] }
-                    if (patch.edits && Array.isArray(patch.edits)) {
-                        patch.edits.forEach(edit => {
-                            const { conv_idx, msg_idx, content } = edit;
-                            if (conv_idx >= 0 && conv_idx < state.data.length && msg_idx >= 0 && msg_idx < state.data[conv_idx].messages.length) {
-                                const k = keyOf(conv_idx, msg_idx);
-                                const orig = state.data[conv_idx].messages[msg_idx].content;
-                                if (content !== orig) {
-                                    state.edits.set(k, content);
-                                    appliedInFile++;
-                                }
-                            }
-                        });
-                    }
-                    // 格式 2: 新版导出（带记录版） { data_sig, conversations: [...] }
-                    else if (patch.conversations && Array.isArray(patch.conversations)) {
-                        if (patch.data_sig && patch.data_sig !== state.dataSig) {
-                            errorFiles.push(`${file.name} (数据指纹不匹配，可能不是同一个原文件)`);
-                            continue;
-                        }
-                        // 遍历所有会话，比对找出差异
-                        patch.conversations.forEach((conv, ci) => {
-                            if (ci >= state.data.length) return;
-                            const origMessages = state.data[ci].messages;
-                            const newMessages = conv.messages;
-                            if (!newMessages) return;
-
-                            for (let mi = 0; mi < newMessages.length; mi++) {
-                                if (mi >= origMessages.length) break;
-                                if (newMessages[mi].content !== origMessages[mi].content) {
-                                    const k = keyOf(ci, mi);
-                                    // 如果当前已经存在修改且内容不同，说明有冲突
-                                    if (state.edits.has(k) && state.edits.get(k) !== newMessages[mi].content) {
-                                        conflict = true;
-                                    }
-                                    state.edits.set(k, newMessages[mi].content);
-                                    appliedInFile++;
-                                }
-                            }
-                        });
-                    }
-                    // 格式 3: 纯数组 (patch_raw)
-                    else if (Array.isArray(patch)) {
-                        errorFiles.push(`${file.name} (不支持直接合并纯净版patch_raw，请使用带记录版的补丁)`);
-                        continue;
-                    } else {
-                        errorFiles.push(`${file.name} (未知的补丁格式)`);
-                        continue;
-                    }
-
-                    appliedCount += appliedInFile;
-                    if (conflict) {
-                        alert(`提示：文件 ${file.name} 中部分修改与之前的修改存在冲突，系统已自动保留最新导入的内容。`);
-                    }
-
-                } catch (err) {
-                    errorFiles.push(`${file.name} (解析失败: ${err.message})`);
+                const patch = await patchLib.readPatchFile(file);
+                if (patch.format === 'invalid') {
+                    errorFiles.push(`${file.name} (${patch.reason})`);
+                    continue;
+                }
+                const result = patchLib.applyPatchToState(patch, state);
+                appliedCount += result.applied;
+                skippedBounds += result.skipped_bounds;
+                if (result.conflict) {
+                    alert(`提示：文件 ${file.name} 中部分修改与之前的修改存在冲突，系统已自动保留最新导入的内容。`);
                 }
             }
 
-            // 应用完毕，刷新界面
-            if (appliedCount > 0) {
+            if (appliedCount > 0 || skippedBounds > 0) {
                 state.hasExported = false;
                 scheduleSave();
                 renderSidebar();
                 renderMain();
                 updateProgress();
 
-                let msg = `补丁导入完成！\n\n成功应用了 ${appliedCount} 处修改。\n这些修改已经在页面上以绿色高亮显示，请核对。`;
+                let msg = `补丁导入完成！\n\n成功应用了 ${appliedCount} 处修改。`;
+                if (skippedBounds > 0) msg += `\n有 ${skippedBounds} 处修改因索引越界被跳过。`;
+                msg += `\n这些修改已经在页面上以绿色高亮显示，请核对。`;
                 if (errorFiles.length) {
                     msg += `\n\n以下文件未能成功合并：\n` + errorFiles.map(e => `- ${e}`).join('\n');
                 }
@@ -1335,6 +1283,143 @@
             }
         });
 
+        /* =========================================================
+         * 通用补丁处理库 patchLib
+         * 所有补丁文件经过 readPatchFile 归一化为 conversations 数组；
+         * 合并操作统一走 mergeConversationsArrays。
+         * ========================================================= */
+        const patchLib = {
+            sortObjectKeys(obj) {
+                // 递归对齐 Python 版 json.dumps(obj, sort_keys=True)
+                if (obj === null || typeof obj !== 'object') return obj;
+                if (Array.isArray(obj)) return obj.map(patchLib.sortObjectKeys);
+                const out = {};
+                Object.keys(obj).sort().forEach(k => { out[k] = patchLib.sortObjectKeys(obj[k]); });
+                return out;
+            },
+            convHash(conv) {
+                try { return JSON.stringify(patchLib.sortObjectKeys(conv)); }
+                catch (e) { return null; }
+            },
+
+            /** 解析补丁文件并归一化。
+             *  返回 { format, conversations, data_sig, warnings, reason }。
+             *  - format: 'sparse_edits' | 'recorded' | 'raw_array' | 'invalid'
+             *  - conversations: 归一化后的会话数组（sparse_edits 无法无中生有，返回 null）
+             */
+            async readPatchFile(file) {
+                try {
+                    const text = await file.text();  // 浏览器自动剥 BOM
+                    let data;
+                    try { data = JSON.parse(text); }
+                    catch (e) { return { format: 'invalid', conversations: null, reason: 'JSON 解析失败：' + e.message }; }
+
+                    // Format 1: 稀疏编辑 { edits: [{ conv_idx, msg_idx, content }] }
+                    if (data && !Array.isArray(data) && Array.isArray(data.edits)) {
+                        return { format: 'sparse_edits', conversations: null, edits: data.edits, reason: '' };
+                    }
+                    // Format 2: 带记录版 { data_sig?, conversations: [...] }
+                    if (data && !Array.isArray(data) && Array.isArray(data.conversations)) {
+                        const convs = data.conversations;
+                        if (!convs.length) return { format: 'invalid', conversations: null, reason: 'conversations 数组为空' };
+                        if (!convs[0] || typeof convs[0] !== 'object' || !Array.isArray(convs[0].messages)) {
+                            return { format: 'invalid', conversations: null, reason: 'conversations 元素缺少 messages 字段' };
+                        }
+                        return { format: 'recorded', conversations: convs, data_sig: data.data_sig || null, reason: '' };
+                    }
+                    // Format 3: 纯净数组 (patch_raw)
+                    if (Array.isArray(data)) {
+                        if (!data.length) return { format: 'invalid', conversations: null, reason: '空数组，无任何会话' };
+                        if (!data[0] || typeof data[0] !== 'object' || !Array.isArray(data[0].messages)) {
+                            return { format: 'invalid', conversations: null, reason: '数组元素缺少 messages 字段' };
+                        }
+                        return { format: 'raw_array', conversations: data, reason: '' };
+                    }
+                    return { format: 'invalid', conversations: null, reason: '无法识别的 JSON 结构（顶层既不是数组，也没有 edits/conversations 字段）' };
+                } catch (e) {
+                    return { format: 'invalid', conversations: null, reason: '读取失败：' + e.message };
+                }
+            },
+
+            /** 将 N 个会话数组合并为一个。
+             *  options: { dedup: boolean }
+             *  返回 { merged, perFile, totalRead, dupCount, badCount }。
+             */
+            mergeConversationsArrays(arrays, { dedup = true } = {}) {
+                const merged = [];
+                const seen = dedup ? new Set() : null;
+                const perFile = [];
+                let totalRead = 0, dupCount = 0, badCount = 0;
+
+                arrays.forEach(arr => {
+                    let added = 0, dup = 0, bad = 0;
+                    arr.forEach(conv => {
+                        if (!conv || typeof conv !== 'object' || !Array.isArray(conv.messages)) { bad++; return; }
+                        if (seen) {
+                            const h = patchLib.convHash(conv);
+                            if (h === null || seen.has(h)) { dup++; return; }
+                            seen.add(h);
+                        }
+                        merged.push(conv);
+                        added++;
+                    });
+                    perFile.push({ read: arr.length, added, dup, bad });
+                    totalRead += arr.length; dupCount += dup; badCount += bad;
+                });
+
+                return { merged, perFile, totalRead, dupCount, badCount };
+            },
+
+            /** 将补丁应用到 state.edits（标注状态）。
+             *  - sparse_edits: 直接按 conv_idx/msg_idx 写 state.edits
+             *  - recorded / raw_array: 按位置比对 messages.content 的差异
+             *  返回 { applied, conflict, skipped_bounds }。
+             *  调用前需保证 state.data 已加载。
+             */
+            applyPatchToState(patch, state) {
+                let applied = 0, conflict = false, skipped_bounds = 0;
+
+                if (patch.format === 'sparse_edits') {
+                    patch.edits.forEach(edit => {
+                        const { conv_idx, msg_idx, content } = edit;
+                        if (conv_idx >= 0 && conv_idx < state.data.length
+                                && msg_idx >= 0 && msg_idx < state.data[conv_idx].messages.length) {
+                            const k = keyOf(conv_idx, msg_idx);
+                            const orig = state.data[conv_idx].messages[msg_idx].content;
+                            if (content !== orig) {
+                                if (state.edits.has(k) && state.edits.get(k) !== content) conflict = true;
+                                state.edits.set(k, content);
+                                applied++;
+                            }
+                        } else {
+                            skipped_bounds++;
+                        }
+                    });
+                } else if (patch.conversations) {
+                    if (patch.format === 'recorded' && patch.data_sig
+                            && patch.data_sig !== state.dataSig) {
+                        // 调用方提前拦截
+                        return { applied: 0, conflict: false, skipped_bounds: 0, fingerprintMismatch: true };
+                    }
+                    patch.conversations.forEach((conv, ci) => {
+                        if (ci >= state.data.length) return;
+                        const origMessages = state.data[ci].messages;
+                        const newMessages = conv.messages;
+                        if (!newMessages) return;
+                        for (let mi = 0; mi < newMessages.length && mi < origMessages.length; mi++) {
+                            if (newMessages[mi].content !== origMessages[mi].content) {
+                                const k = keyOf(ci, mi);
+                                if (state.edits.has(k) && state.edits.get(k) !== newMessages[mi].content) conflict = true;
+                                state.edits.set(k, newMessages[mi].content);
+                                applied++;
+                            }
+                        }
+                    });
+                }
+                return { applied, conflict, skipped_bounds };
+            },
+        };
+
         /* ---------- Raw Patches 合并模块（独立于 state，不影响标注） ---------- */
         const mergeState = {
             files: [],          // [{ file, name, size, valid, reason, convCount }]
@@ -1347,39 +1432,12 @@
             if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
             return (bytes / 1073741824).toFixed(2) + ' GB';
         }
-        function sortObjectKeys(obj) {
-            // 递归对齐 Python 版 json.dumps(conv, sort_keys=True)
-            if (obj === null || typeof obj !== 'object') return obj;
-            if (Array.isArray(obj)) return obj.map(sortObjectKeys);
-            const out = {};
-            Object.keys(obj).sort().forEach(k => { out[k] = sortObjectKeys(obj[k]); });
-            return out;
-        }
-        function convHash(conv) {
-            try { return JSON.stringify(sortObjectKeys(conv)); }
-            catch (e) { return null; }
-        }
-        function validateMergeFile(file) {
-            // 返回 { valid, reason, convCount }
-            return new Promise(async resolve => {
-                try {
-                    const text = await file.text();  // 浏览器会自动剥 BOM
-                    let data;
-                    try { data = JSON.parse(text); }
-                    catch (e) { resolve({ valid: false, reason: 'JSON 解析失败：' + e.message, convCount: 0 }); return; }
-                    if (!Array.isArray(data)) { resolve({ valid: false, reason: '顶层不是数组', convCount: 0 }); return; }
-                    if (!data.length) { resolve({ valid: false, reason: '空数组，无任何会话', convCount: 0 }); return; }
-                    // 抽样校验第一个元素，必须有 messages 字段
-                    const first = data[0];
-                    if (!first || typeof first !== 'object' || !Array.isArray(first.messages)) {
-                        resolve({ valid: false, reason: '数组元素缺少 messages 字段，不是 raw patch 格式', convCount: 0 }); return;
-                    }
-                    resolve({ valid: true, reason: '', convCount: data.length });
-                } catch (e) {
-                    resolve({ valid: false, reason: '读取失败：' + e.message, convCount: 0 });
-                }
-            });
-        }
+        const FORMAT_LABEL = {
+            sparse_edits: '稀疏编辑',
+            recorded: '带记录',
+            raw_array: '纯净数组',
+            invalid: '无效',
+        };
         function renderMergeFileList() {
             const list = $('mergeFileList');
             if (!mergeState.files.length) {
@@ -1388,34 +1446,42 @@
                 $('mergeWarnings').style.display = 'none';
                 return;
             }
-            let totalSize = 0, validCount = 0, warnMsgs = [];
+            let totalSize = 0, mergeableCount = 0, warnMsgs = [];
             const items = mergeState.files.map((f, i) => {
                 totalSize += f.size;
-                if (f.valid) validCount++;
+                const isMergeable = f.patch && f.patch.conversations && f.patch.conversations.length;
+                if (isMergeable) mergeableCount++;
+                const fmtLabel = f.patch ? FORMAT_LABEL[f.patch.format] || f.patch.format : '?';
+                let subText;
+                if (!f.patch) {
+                    subText = `${fmtSize(f.size)} · 校验中...`;
+                } else if (f.patch.format === 'invalid') {
+                    subText = `${fmtSize(f.size)} · ❌ ${escapeHTML(f.patch.reason)}`;
+                } else if (f.patch.format === 'sparse_edits') {
+                    subText = `${fmtSize(f.size)} · ℹ 稀疏编辑格式（无法直接合并为完整数组）`;
+                } else {
+                    subText = `${fmtSize(f.size)} · [${fmtLabel}] ${f.patch.conversations.length} 条会话`;
+                }
                 return `<div style="display:flex; align-items:center; gap:8px; padding:4px 2px; border-bottom:1px dashed var(--border);">` +
                     `<span style="color:var(--muted); font-size:.72rem; width:18px;">${i + 1}</span>` +
                     `<div style="flex:1; min-width:0;">` +
                     `<div style="font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(f.name)}</div>` +
-                    `<div style="font-size:.72rem; color:${f.valid ? 'var(--muted)' : '#b91c1c'};">` +
-                    (f.valid ? `${fmtSize(f.size)} · ${f.convCount} 条会话` : `${fmtSize(f.size)} · ❌ ${escapeHTML(f.reason)}`) +
-                    `</div></div>` +
+                    `<div style="font-size:.72rem; color:${f.patch && f.patch.format === 'invalid' ? '#b91c1c' : 'var(--muted)'};">${subText}</div></div>` +
                     `<button data-mi="${i}" style="border:none; background:none; color:#b91c1c; cursor:pointer; font-size:.9rem;" title="移除">×</button>` +
                     `</div>`;
             });
             list.innerHTML = items.join('');
-            $('mergeDo').disabled = validCount === 0;
-            // OOM 警告
-            $('mergeWarnings').style.display = 'none';
+            $('mergeDo').disabled = mergeableCount === 0;
             mergeState.files.forEach(f => {
                 if (f.size > 200 * 1048576) warnMsgs.push(`⚠ 文件 ${escapeHTML(f.name)} 超过 200MB，浏览器合并时内存压力较大，建议分批处理`);
             });
             if (totalSize > 500 * 1048576) warnMsgs.push(`⚠ 已选文件总大小 ${fmtSize(totalSize)}，接近浏览器内存上限，强烈建议分批处理`);
             if (warnMsgs.length) {
-                $('mergeWarnings').innerHTML = `<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; font-size:.78rem; color:#92400e;">` +
-                    warnMsgs.join('<br>') + `</div>`;
+                $('mergeWarnings').innerHTML = `<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; font-size:.78rem; color:#92400e;">` + warnMsgs.join('<br>') + `</div>`;
                 $('mergeWarnings').style.display = 'block';
+            } else {
+                $('mergeWarnings').style.display = 'none';
             }
-            // 绑定每一项的移除按钮
             list.querySelectorAll('button[data-mi]').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const mi = Number(btn.dataset.mi);
@@ -1442,17 +1508,12 @@
         $('mergeFileInput').addEventListener('change', async (e) => {
             const files = Array.from(e.target.files);
             e.target.value = '';
-            // 先展示文件壳子（名字/大小），再异步校验
-            const pre = files.map(f => ({ file: f, name: f.name, size: f.size, valid: null, reason: '', convCount: 0 }));
+            const pre = files.map(f => ({ file: f, name: f.name, size: f.size, patch: null }));
             mergeState.files.push(...pre);
             renderMergeFileList();
-            // 逐个校验，实时更新状态
             for (let i = mergeState.files.length - pre.length, j = 0; j < pre.length; i++, j++) {
                 $('mergeProgress').textContent = `正在校验 ${j + 1}/${pre.length}：${pre[j].name}`;
-                const r = await validateMergeFile(pre[j].file);
-                mergeState.files[i].valid = r.valid;
-                mergeState.files[i].reason = r.reason;
-                mergeState.files[i].convCount = r.convCount;
+                mergeState.files[i].patch = await patchLib.readPatchFile(pre[j].file);
                 renderMergeFileList();
             }
             $('mergeProgress').textContent = '校验完毕';
@@ -1461,71 +1522,66 @@
 
         // 事件：执行合并
         $('mergeDo').addEventListener('click', async () => {
-            const validFiles = mergeState.files.filter(f => f.valid);
-            if (!validFiles.length) return;
+            const mergeable = mergeState.files.filter(f => f.patch && f.patch.conversations);
+            if (!mergeable.length) return;
             const dedup = mergeState.dedup;
             $('mergeDo').disabled = true;
-            $('mergeProgress').textContent = `开始合并 ${validFiles.length} 个文件...`;
+            $('mergeProgress').textContent = `开始合并 ${mergeable.length} 个文件...`;
 
-            const all = [];
-            const seen = dedup ? new Set() : null;
-            const stats = { totalFiles: validFiles.length, totalRead: 0, skippedDup: 0, skippedBad: 0, perFile: [] };
-
-            for (let i = 0; i < validFiles.length; i++) {
-                const f = validFiles[i];
-                $('mergeProgress').textContent = `处理 ${i + 1}/${validFiles.length}：${f.name}`;
-                try {
-                    const text = await f.file.text();
-                    const data = JSON.parse(text);  // 已校验过，这里不会炸
-                    let fileAdd = 0, fileDup = 0, fileBad = 0;
-                    for (const conv of data) {
-                        if (!conv || typeof conv !== 'object' || !Array.isArray(conv.messages)) {
-                            fileBad++; continue;
-                        }
-                        if (seen) {
-                            const h = convHash(conv);
-                            if (h === null || seen.has(h)) { fileDup++; continue; }
-                            seen.add(h);
-                        }
-                        all.push(conv);
-                        fileAdd++;
-                    }
-                    stats.perFile.push({ name: f.name, read: data.length, added: fileAdd, dup: fileDup, bad: fileBad });
-                    stats.totalRead += data.length; stats.skippedDup += fileDup; stats.skippedBad += fileBad;
-                } catch (err) {
-                    stats.perFile.push({ name: f.name, error: err.message });
-                }
+            const arrays = [];
+            const perFile = [];
+            for (let i = 0; i < mergeable.length; i++) {
+                const f = mergeable[i];
+                $('mergeProgress').textContent = `处理 ${i + 1}/${mergeable.length}：${f.name}`;
+                arrays.push(f.patch.conversations);
+                perFile.push({ name: f.name, format: f.patch.format, read: f.patch.conversations.length });
             }
 
-            mergeState.merged = all;
-            $('mergeProgress').textContent = `合并完成，总 ${all.length} 条`;
+            const result = patchLib.mergeConversationsArrays(arrays, { dedup });
+
+            // 拼装带文件级统计的 perFile
+            let fi = 0;
+            const perFileWithStats = [];
+            result.perFile.forEach(stats => {
+                perFileWithStats.push({ ...perFile[fi], ...stats });
+                fi++;
+            });
+
+            mergeState.merged = result.merged;
+            $('mergeProgress').textContent = `合并完成，${result.merged.length} 条会话`;
             $('mergeDo').disabled = false;
 
-            // 展示结果
+            // 结果弹窗
             const body = [];
-            body.push(`✅ 成功合并 <b>${stats.totalFiles}</b> 个文件，共读取 <b>${stats.totalRead}</b> 条会话`);
+            body.push(`✅ 成功合并 <b>${mergeable.length}</b> 个文件，共读取 <b>${result.totalRead}</b> 条会话`);
             if (dedup) {
-                body.push(`🔁 自动去重后保留 <b>${all.length}</b> 条（重复 <b>${stats.skippedDup}</b> 条，损坏 <b>${stats.skippedBad}</b> 条）`);
+                body.push(`🔁 自动去重后保留 <b>${result.merged.length}</b> 条（重复 <b>${result.dupCount}</b> 条，损坏 <b>${result.badCount}</b> 条已跳过）`);
             } else {
-                body.push(`🔁 保留 <b>${all.length}</b> 条（损坏 <b>${stats.skippedBad}</b> 条已跳过）`);
+                body.push(`🔁 保留 <b>${result.merged.length}</b> 条（损坏 <b>${result.badCount}</b> 条已跳过）`);
             }
-            // 每个文件的小统计
-            const fileStatsHtml = stats.perFile.map(p => {
-                if (p.error) return `<div style="color:#b91c1c">❌ ${escapeHTML(p.name)}：${escapeHTML(p.error)}</div>`;
+            // 无法合并的文件（sparse_edits）也列出来
+            const rejected = mergeState.files.filter(f => f.patch && !f.patch.conversations && f.patch.format !== 'invalid');
+            if (rejected.length) {
+                body.push(`<span style="color:#b45309;">ℹ 以下 ${rejected.length} 个文件不适合直接合并为数组：</span>`);
+                rejected.forEach(f => {
+                    body.push(`• ${escapeHTML(f.name)}（${FORMAT_LABEL[f.patch.format]} 格式，需要原始数据文件配合才能合并）`);
+                });
+            }
+            const fileStatsHtml = perFileWithStats.map(p => {
                 const parts = [`${p.read} 条`];
                 if (dedup) parts.push(`新增 ${p.added}`, `重复 ${p.dup}${p.bad ? `，损坏 ${p.bad}` : ''}`);
                 else if (p.bad) parts.push(`损坏 ${p.bad}`);
-                return `<div>• ${escapeHTML(p.name)}：${parts.join(' · ')}</div>`;
+                return `<div>• ${escapeHTML(p.name)} <span style="color:var(--muted);">[${FORMAT_LABEL[p.format] || p.format}]</span>：${parts.join(' · ')}</div>`;
             }).join('');
             body.push(`<div style="margin-top:8px; font-size:.78rem; color:var(--muted);">${fileStatsHtml}</div>`);
             $('mergeResultBody').innerHTML = body.join('<br>');
-            $('mergeResultTitle').textContent = all.length ? '合并完成' : '合并结果为空';
-            $('mergeResultExport').disabled = !all.length;
+            $('mergeResultTitle').textContent = result.merged.length ? '合并完成' : '合并结果为空';
+            $('mergeResultExport').disabled = !result.merged.length;
             $('mergeModal').hidden = true;
             $('mergeResultModal').hidden = false;
         });
 
-        // 合并结果弹窗
+        // 合并结果弹窗（关闭 / 导出）
         $('mergeResultClose').addEventListener('click', () => {
             $('mergeResultModal').hidden = true;
             mergeState.merged = null;
@@ -1537,12 +1593,12 @@
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const fname = `merged_patch_raw_${ts}.json`;
+            const fname = `merged_patches_${ts}.json`;
             if (window.showSaveFilePicker) {
                 try {
                     const handle = await window.showSaveFilePicker({
                         suggestedName: fname,
-                        types: [{ description: '合并后的 Raw Patch JSON', accept: { 'application/json': ['.json'] } }],
+                        types: [{ description: '合并后的补丁 JSON', accept: { 'application/json': ['.json'] } }],
                     });
                     const w = await handle.createWritable();
                     await w.write(blob); await w.close();
