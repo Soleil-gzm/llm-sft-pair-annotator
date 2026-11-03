@@ -41,7 +41,8 @@ def main():
 
     for fpath in files:
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            # utf-8-sig 自动剥掉 BOM，兼容 Windows 记事本保存的 UTF-8 文件
+            with open(fpath, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
         except Exception as e:
             print(f"跳过 {os.path.basename(fpath)}: 解析失败 - {e}")
