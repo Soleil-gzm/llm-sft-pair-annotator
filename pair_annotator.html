@@ -5,6 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>话术微调标注工具</title>
+    <!-- 引入 JSZip 用于打包导出 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root {
             --primary: #4f46e5;
@@ -16,7 +18,6 @@
             --user: #2563eb;
             --asst: #059669;
             --warn: #f59e0b;
-            --modified-bg: #fffbeb;
         }
 
         * {
@@ -73,6 +74,12 @@
             cursor: not-allowed;
         }
 
+        button.secondary {
+            background: #fff;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
         button.link {
             background: none;
             color: var(--primary);
@@ -80,13 +87,7 @@
             font-size: .78rem;
         }
 
-        button.secondary {
-            background: #fff;
-            color: var(--text);
-            border: 1px solid var(--border);
-        }
-
-        /* 通用弹窗样式 */
+        /* 弹窗通用 */
         .modal-mask {
             position: fixed;
             inset: 0;
@@ -105,7 +106,7 @@
             background: #fff;
             border-radius: 8px;
             padding: 18px 20px;
-            width: 300px;
+            width: 320px;
             box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
         }
 
@@ -116,7 +117,7 @@
 
         .modal-tip {
             font-size: .78rem;
-            color: var(--muted);
+            color: var(--text2);
             margin-bottom: 10px;
         }
 
@@ -317,49 +318,6 @@
             cursor: not-allowed;
         }
 
-        .modal-preview {
-            max-height: 50vh;
-            overflow-y: auto;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 10px 12px;
-            margin-bottom: 12px;
-            font-size: .82rem;
-            line-height: 1.55;
-        }
-
-        .modal-preview .diff-item {
-            padding: 6px 0;
-            border-bottom: 1px dashed var(--border);
-        }
-
-        .modal-preview .diff-item:last-child {
-            border-bottom: none;
-        }
-
-        .modal-preview .diff-key {
-            color: var(--muted);
-            font-size: .72rem;
-            margin-bottom: 2px;
-        }
-
-        .modal-preview .old {
-            color: #b91c1c;
-            text-decoration: line-through;
-        }
-
-        .modal-preview .sep {
-            color: var(--muted);
-            margin: 0 6px;
-        }
-
-        .modal-preview .new {
-            color: #047857;
-            background: #d1fae5;
-            padding: 0 2px;
-            border-radius: 2px;
-        }
-
         .sys-card,
         .turn {
             background: var(--card);
@@ -526,6 +484,50 @@
         .orig.show {
             display: block;
         }
+
+        /* 批量替换预览弹窗 */
+        .modal-preview {
+            max-height: 50vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            font-size: .82rem;
+            line-height: 1.55;
+        }
+
+        .modal-preview .diff-item {
+            padding: 6px 0;
+            border-bottom: 1px dashed var(--border);
+        }
+
+        .modal-preview .diff-item:last-child {
+            border-bottom: none;
+        }
+
+        .modal-preview .diff-key {
+            color: var(--text2);
+            font-size: .72rem;
+            margin-bottom: 2px;
+        }
+
+        .modal-preview .old {
+            color: #b91c1c;
+            text-decoration: line-through;
+        }
+
+        .modal-preview .sep {
+            color: var(--text2);
+            margin: 0 6px;
+        }
+
+        .modal-preview .new {
+            color: #047857;
+            background: #d1fae5;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
     </style>
 </head>
 
@@ -535,10 +537,10 @@
         <span id="progressText">未加载数据</span>
         <button id="btnAnnotator" class="secondary" title="点击修改标注人">标注人：未设置</button>
         <button id="btnOpen">打开数据文件</button>
-        <button id="btnImportPatch" disabled>导入补丁合并</button>
-        <button id="btnExportData" disabled>导出数据</button>
-        <button id="btnMergeRaw" class="secondary">⊞ 合并补丁文件</button>
+        <button id="btnExportZip" disabled>一键交卷</button>
+        <button id="btnMergeTool" class="secondary">合并补丁</button>
     </header>
+
     <div class="layout">
         <aside>
             <div class="side-tools">
@@ -551,18 +553,17 @@
             <div id="convList" class="conv-list"></div>
         </aside>
         <main id="main">
-            <div class="empty">请点击右上角「打开数据文件」加载原始对话 JSON<br>或通过 URL 参数 ?data=文件名.json 自动加载</div>
+            <div class="empty">请点击右上角「打开数据文件」加载原始对话 JSON</div>
         </main>
     </div>
-    <!-- 隐藏的文件输入 -->
-    <input type="file" id="fileInput" accept=".json" hidden>
-    <input type="file" id="patchInput" accept=".json" multiple hidden>
 
-    <!-- 标注人署名弹窗 -->
+    <input type="file" id="fileInput" accept=".json" hidden>
+
+    <!-- 弹窗：标注人署名 -->
     <div id="annotatorModal" class="modal-mask" hidden>
         <div class="modal">
             <h3>填写标注人</h3>
-            <p class="modal-tip">姓名/工号将写入文件名，便于追溯；只需填写一次</p>
+            <p class="modal-tip">姓名将写入文件名，便于追溯；只需填写一次</p>
             <input id="annotatorInput" type="text" placeholder="如：张三" maxlength="20">
             <div class="modal-actions">
                 <button id="annotatorCancel" class="secondary">取消</button>
@@ -571,7 +572,7 @@
         </div>
     </div>
 
-    <!-- 批量替换预览确认弹窗 -->
+    <!-- 弹窗：批量替换预览 -->
     <div id="replaceModal" class="modal-mask" hidden>
         <div class="modal" style="width: 460px;">
             <h3>批量替换预览</h3>
@@ -584,79 +585,43 @@
         </div>
     </div>
 
-    <!-- 补丁合并面板（支持全部 3 种格式） -->
-    <div id="mergeModal" class="modal-mask" hidden>
-        <div class="modal" style="width: 620px;">
-            <h3>⊞ 合并补丁文件</h3>
-            <p class="modal-tip">支持稀疏编辑 / 带记录 / 纯净数组三种格式的补丁，合并为一个完整数组并可选去重。<b>稀疏编辑格式</b>无法直接合并为完整数组，会在下方列出但不会并入结果。此操作独立于当前标注状态。</p>
+    <!-- 弹窗：补丁合并工具 -->
+    <div id="mergeToolModal" class="modal-mask" hidden>
+        <div class="modal" style="width: 500px;">
+            <h3>合并补丁文件</h3>
+            <p class="modal-tip" style="color:#b45309;">
+                ⚠️ 注意：本功能将直接把所有交卷的 `.zip` 或 `.json` 补丁应用回原文件。<br>
+                请确保您已经选中了对应的<b>原始数据文件</b>。
+            </p>
 
-            <div id="mergeWarnings" style="display:none"></div>
-
-            <div style="margin:12px 0; display:flex; gap:8px; align-items:center;">
-                <button id="mergeAddFiles">选择文件</button>
-                <button id="mergeClearAll" class="secondary">清空列表</button>
-                <input type="file" id="mergeFileInput" accept=".json" multiple hidden>
-                <label style="font-size:.78rem; color:var(--muted); margin-left:auto;">
-                    <input type="checkbox" id="mergeDedup" checked> 合并时自动去重
-                </label>
+            <div style="margin: 15px 0;">
+                <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">1. 选择原始数据文件 (JSON)</div>
+                <button id="btnMergeSelectOrig" class="secondary">选择原文件</button>
+                <span id="mergeOrigName" style="font-size: 0.8rem; color: var(--text2); margin-left: 8px;">未选择</span>
+                <input type="file" id="mergeOrigInput" accept=".json" hidden>
             </div>
 
-            <div id="mergeFileList" style="max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:6px; margin-bottom:12px;">
-                <div style="color:var(--muted); font-size:.8rem; padding:20px; text-align:center;">尚未选择任何文件</div>
+            <div style="margin: 15px 0;">
+                <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 6px;">2. 选择要合并的交卷压缩包/补丁文件</div>
+                <button id="btnMergeSelectPatches" class="secondary">选择补丁 (支持多选)</button>
+                <span id="mergePatchesCount" style="font-size: 0.8rem; color: var(--text2); margin-left: 8px;">已选 0
+                    个</span>
+                <input type="file" id="mergePatchesInput" accept=".zip,.json" multiple hidden>
             </div>
 
-            <div id="mergeProgress" style="font-size:.8rem; color:var(--text2); margin-bottom:10px; min-height:1.2em;"></div>
+            <div id="mergeToolLog"
+                style="font-size: 0.78rem; color: #047857; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; padding: 10px; margin-bottom: 12px; min-height: 40px; max-height: 120px; overflow-y: auto; display: none;">
+            </div>
 
             <div class="modal-actions">
-                <button id="mergeCancel" class="secondary">关闭</button>
-                <button id="mergeDo" disabled>开始合并</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 合并结果展示弹窗 -->
-    <div id="mergeResultModal" class="modal-mask" hidden>
-        <div class="modal" style="width: 540px;">
-            <h3 id="mergeResultTitle">合并完成</h3>
-            <div id="mergeResultBody" style="font-size:.82rem; line-height:1.75; margin-bottom:12px;"></div>
-            <div class="modal-actions">
-                <button id="mergeResultClose" class="secondary">关闭</button>
-                <button id="mergeResultExport" disabled>保存为文件</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 导出选择弹窗 -->
-    <div id="exportModal" class="modal-mask" hidden>
-        <div class="modal" style="width: 360px;">
-            <h3>选择导出内容</h3>
-            <p class="modal-tip">请勾选您需要提交的文件格式，系统将自动下载。</p>
-            <div style="margin: 15px 0; display: flex; flex-direction: column; gap: 12px;">
-                <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 0.9rem;">
-                    <input type="checkbox" id="chkExportFull" checked
-                        style="width: 16px; height: 16px; margin-top: 2px;">
-                    <div>
-                        <b>完整文件</b>
-                        <div style="font-size: 0.75rem; color: var(--text2);">包含全部修改的完整数据</div>
-                    </div>
-                </label>
-                <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 0.9rem;">
-                    <input type="checkbox" id="chkExportPatch" checked
-                        style="width: 16px; height: 16px; margin-top: 2px;">
-                    <div>
-                        <b>修改补丁</b>
-                        <div style="font-size: 0.75rem; color: var(--text2);">仅包含修改的片段，分为带记录版和纯净版</div>
-                    </div>
-                </label>
-            </div>
-            <div class="modal-actions">
-                <button id="exportCancel" class="secondary">取消</button>
-                <button id="exportOk">确认导出</button>
+                <button id="mergeToolCancel" class="secondary">关闭</button>
+                <button id="btnMergeDo" disabled>开始合并并下载</button>
             </div>
         </div>
     </div>
 
     <script>
+        // ----- 核心状态 -----
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
             edits: new Map(),
@@ -665,15 +630,12 @@
             lastBatch: null,
             hasExported: false,
         };
-
         const search = { q: '', matches: [], cur: -1 };
-
         const $ = id => document.getElementById(id);
         const keyOf = (ci, mi) => ci + ':' + mi;
+        const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
-        function el(tag, cls) { const e = document.createElement(tag); if (cls) e.className = cls; return e; }
-
-        /* ---------- 数据加载与校验 ---------- */
+        // ----- 数据加载与校验 -----
         function validateData(data) {
             const errors = [];
             if (!Array.isArray(data)) return ['顶层结构不是 JSON 数组'];
@@ -722,17 +684,14 @@
             state.hasExported = false;
 
             restoreEdits();
-
             $('filter').disabled = false;
-            $('btnImportPatch').disabled = false;
-            $('btnExportData').disabled = false;
-
+            $('btnExportZip').disabled = false;
             renderSidebar();
             selectConv(0);
             updateProgress();
         }
 
-        /* ---------- 本地暂存 ---------- */
+        // ----- 本地暂存 -----
         function storageKey() { return `pair_annotator:${state.fileName}:${state.data.length}:${state.totalMsgs}`; }
         let saveTimer = null;
         function scheduleSave() {
@@ -750,25 +709,22 @@
             try {
                 const raw = localStorage.getItem(storageKey());
                 if (raw) state.edits = new Map(JSON.parse(raw));
-            } catch (e) { /* 忽略损坏的暂存 */ }
+            } catch (e) { /* 忽略 */ }
         }
-
         function resetAfterExport() {
             clearTimeout(saveTimer);
             state.hasExported = true;
             state.edits.clear();
             state.lastBatch = null;
             localStorage.removeItem(storageKey());
-
             const ri = $('replaceInput');
             if (ri) ri.value = '';
-
             renderSidebar();
             if (state.current >= 0) selectConv(state.current);
             updateProgress();
         }
 
-        /* ---------- 侧栏 ---------- */
+        // ----- 侧栏渲染 -----
         function convEditCount(ci) {
             let n = 0;
             for (const k of state.edits.keys()) if (Number(k.split(':')[0]) === ci) n++;
@@ -811,7 +767,7 @@
             if (mod) { const b = el('span', 'badge'); b.textContent = '改 ' + mod; meta.append(b); }
         }
 
-        /* ---------- 主区域 ---------- */
+        // ----- 主区域渲染 -----
         function selectConv(i) {
             if (!state.data || i < 0 || i >= state.data.length) return;
             state.current = i;
@@ -820,7 +776,6 @@
             if (item) { item.classList.add('active'); item.scrollIntoView({ block: 'nearest' }); }
             renderMain();
         }
-
         function groupTurns(msgs) {
             const turns = []; let cur = null;
             for (let i = 1; i < msgs.length; i++) {
@@ -829,7 +784,6 @@
             }
             return turns;
         }
-
         function renderMain() {
             const main = $('main');
             main.textContent = '';
@@ -839,7 +793,7 @@
 
             const head = el('div', 'conv-header');
             const sg = el('div', 'search-group');
-            const si = el('input'); si.id = 'mainSearch'; si.placeholder = '搜索关键词/短句（高亮+筛选会话，Enter 下一个）';
+            const si = el('input'); si.id = 'mainSearch'; si.placeholder = '搜索关键词/短句（Enter 下一个）';
             si.value = search.q;
             let searchTimer = null;
             si.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => doSearch(true), 250); });
@@ -899,7 +853,6 @@
             refreshHighlights();
             updateMatchUI();
         }
-
         function msgBlock(ci, mi) {
             const m = state.data[ci].messages[mi];
             const k = keyOf(ci, mi);
@@ -940,17 +893,13 @@
             wrap.append(head, taWrap, orig);
             return wrap;
         }
-
         function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
-
         function onEdit(ci, mi, ta, wrap) {
             const orig = state.data[ci].messages[mi].content;
             const k = keyOf(ci, mi);
             const isMod = ta.value !== orig;
             if (isMod) state.edits.set(k, ta.value); else state.edits.delete(k);
-
             state.hasExported = false;
-
             wrap.classList.toggle('modified', isMod);
             const hl = wrap.querySelector('.backdrop .hl');
             if (hl) hl.innerHTML = renderBackdropHTML(ta.value, orig, search.q);
@@ -958,15 +907,13 @@
             updateProgress();
             scheduleSave();
         }
-
         function updateProgress() {
             if (!state.data) return;
             const convs = new Set([...state.edits.keys()].map(k => Number(k.split(':')[0]))).size;
-            $('progressText').textContent =
-                `${state.fileName} · 已修改会话 ${convs}/${state.data.length} · 已修改消息 ${state.edits.size}`;
+            $('progressText').textContent = `${state.fileName} · 已修改会话 ${convs}/${state.data.length} · 已修改消息 ${state.edits.size}`;
         }
 
-        /* ---------- 话术搜索与高亮 ---------- */
+        // ----- 搜索与高亮 -----
         function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
         function escapeHTML(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
         function highlightHTML(text, q) {
@@ -1050,8 +997,51 @@
             });
             return res;
         }
+        function doSearch(mode) {
+            const si = $('mainSearch');
+            const q = si ? si.value : '';
+            if (mode === true || q !== search.q) {
+                search.q = q;
+                search.matches = computeMatches(q);
+                search.cur = -1;
+                refreshHighlights();
+                updateMatchUI();
+                renderSidebar();
+                if (search.matches.length) jumpToMatch(0);
+                else clearCurMatch();
+                return;
+            }
+            if (mode === 'next') jumpToMatch(search.cur + 1);
+            else if (mode === 'prev') jumpToMatch(search.cur - 1);
+        }
+        function jumpToMatch(i) {
+            if (!search.matches.length) return;
+            search.cur = ((i % search.matches.length) + search.matches.length) % search.matches.length;
+            const { ci, mi } = search.matches[search.cur];
+            if (ci !== state.current) selectConv(ci);
+            clearCurMatch();
+            const target = $('main').querySelector(`[data-key="${ci}:${mi}"]`);
+            if (!target) { updateMatchUI(); return; }
+            target.classList.add('cur-match');
+            if (mi === 0) {
+                const sysBody = target.querySelector('.sys-body');
+                const toggle = target.querySelector('.sys-head .link');
+                if (sysBody && !sysBody.classList.contains('expanded')) {
+                    sysBody.classList.add('expanded');
+                    if (toggle) toggle.textContent = '收起';
+                }
+            }
+            const mark = target.querySelector('.hl mark') || target.querySelector('.sys-body mark') || target;
+            mark.scrollIntoView({ block: 'center', behavior: 'auto' });
+            updateMatchUI();
+            const si = $('mainSearch');
+            if (si && document.activeElement !== si) {
+                si.focus();
+                si.setSelectionRange(si.value.length, si.value.length);
+            }
+        }
 
-        /* ---------- 批量替换 ---------- */
+        // ----- 批量替换 -----
         function currentContentOf(ci, mi) {
             const k = keyOf(ci, mi);
             if (state.edits.has(k)) return state.edits.get(k);
@@ -1079,25 +1069,23 @@
         function doBatchReplace() {
             const q = search.q;
             const replacement = $('replaceInput') ? $('replaceInput').value : '';
-            if (!q) { flashMsg('请先在搜索框输入要查找的关键词/短句'); return; }
+            if (!q) { flashMsg('请先在搜索框输入关键词'); return; }
             if (replacement === '') { flashMsg('请在「替换为」框里填新内容'); return; }
             const hits = scanBatchReplace(q, replacement);
-            if (!hits.length) { flashMsg('当前关键词在所有 user/assistant 消息中没有匹配'); return; }
+            if (!hits.length) { flashMsg('没有匹配项'); return; }
 
             const convIds = new Set(hits.map(h => h.ci));
-            const summary = `关键词「${q}」 → 替换为「${replacement}」\n影响 ${convIds.size} 条会话，共 ${hits.length} 处将被替换`;
-            $('replaceSummary').textContent = summary;
+            $('replaceSummary').textContent = `关键词「${q}」 → 替换为「${replacement}」\n影响 ${convIds.size} 条会话，共 ${hits.length} 处`;
             const pv = $('replacePreview');
-            const show = hits.slice(0, 3);
-            pv.innerHTML = show.map(h => {
+            pv.innerHTML = hits.slice(0, 3).map(h => {
                 const oldShort = h.old.length > 60 ? h.old.slice(0, 57) + '…' : h.old;
                 const newShort = h.new.length > 60 ? h.new.slice(0, 57) + '…' : h.new;
                 return `<div class="diff-item"><div class="diff-key">会话 #${h.ci} · 消息 ${h.mi}</div>` +
                     `<div><span class="old"></span>${escapeHTML(oldShort)}</div>` +
                     `<div><span class="sep">→</span><span class="new">${escapeHTML(newShort)}</span></div></div>`;
             }).join('');
-            if (hits.length > 3) pv.innerHTML += `<p class="modal-tip" style="margin-top:8px">（仅展示前 3 条，还有 ${hits.length - 3} 处未列出）</p>`;
-            batchPending = { q, replacement, hits };
+            if (hits.length > 3) pv.innerHTML += `<p class="modal-tip" style="margin-top:8px">（还有 ${hits.length - 3} 处未列出）</p>`;
+            batchPending = { hits };
             $('replaceModal').hidden = false;
         }
         $('replaceOk') && $('replaceOk').addEventListener('click', () => {
@@ -1107,11 +1095,8 @@
             hits.forEach(({ ci, mi, old, new: rep }) => {
                 const k = keyOf(ci, mi);
                 const had = state.edits.has(k);
-                if (rep === state.data[ci].messages[mi].content) {
-                    state.edits.delete(k);
-                } else {
-                    state.edits.set(k, rep);
-                }
+                if (rep === state.data[ci].messages[mi].content) state.edits.delete(k);
+                else state.edits.set(k, rep);
                 undoEntries.push([k, old, had]);
             });
             state.lastBatch = undoEntries;
@@ -1128,11 +1113,8 @@
             state.lastBatch.forEach(([k, old, had]) => {
                 const [ci, mi] = k.split(':').map(Number);
                 const orig = state.data[ci].messages[mi].content;
-                if (old === orig) {
-                    state.edits.delete(k);
-                } else {
-                    state.edits.set(k, old);
-                }
+                if (old === orig) state.edits.delete(k);
+                else state.edits.set(k, old);
             });
             state.lastBatch = null;
             refreshAfterBatch();
@@ -1140,7 +1122,6 @@
         function refreshAfterBatch() {
             if (state.current < 0) state.current = 0;
             state.hasExported = false;
-
             renderMain();
             buildSearchText();
             search.matches = computeMatches(search.q);
@@ -1154,58 +1135,12 @@
             if (b) b.disabled = !state.lastBatch;
             scheduleSave();
         }
-        function doSearch(mode) {
-            const si = $('mainSearch');
-            const q = si ? si.value : '';
-            if (mode === true || q !== search.q) {
-                search.q = q;
-                search.matches = computeMatches(q);
-                search.cur = -1;
-                refreshHighlights();
-                updateMatchUI();
-                renderSidebar();
-                if (search.matches.length) jumpToMatch(0);
-                else clearCurMatch();
-                return;
-            }
-            if (mode === 'next') jumpToMatch(search.cur + 1);
-            else if (mode === 'prev') jumpToMatch(search.cur - 1);
-        }
-        function jumpToMatch(i) {
-            if (!search.matches.length) return;
-            search.cur = ((i % search.matches.length) + search.matches.length) % search.matches.length;
-            const { ci, mi } = search.matches[search.cur];
-            const sameConv = ci === state.current;
-            if (!sameConv) selectConv(ci);
-            clearCurMatch();
-            const target = $('main').querySelector(`[data-key="${ci}:${mi}"]`);
-            if (!target) { updateMatchUI(); return; }
-            target.classList.add('cur-match');
-            if (mi === 0) {
-                const sysBody = target.querySelector('.sys-body');
-                const toggle = target.querySelector('.sys-head .link');
-                if (sysBody && !sysBody.classList.contains('expanded')) {
-                    sysBody.classList.add('expanded');
-                    if (toggle) toggle.textContent = '收起';
-                }
-            }
-            const mark = target.querySelector('.hl mark') || target.querySelector('.sys-body mark') || target;
-            mark.scrollIntoView({ block: 'center', behavior: 'auto' });
-            updateMatchUI();
-            const si = $('mainSearch');
-            if (si && document.activeElement !== si) {
-                si.focus();
-                si.setSelectionRange(si.value.length, si.value.length);
-            }
-        }
 
-        /* ---------- 标注人署名 ---------- */
+        // ----- 标注人管理 -----
         let annotatorCallback = null;
         function getAnnotator() { return localStorage.getItem('pair_annotator_annotator') || ''; }
         function sanitizeName(s) { return s.trim().replace(/[\\/:*?"<>|\s]+/g, '_'); }
-        function updateAnnotatorUI() {
-            $('btnAnnotator').textContent = '标注人：' + (getAnnotator() || '未设置');
-        }
+        function updateAnnotatorUI() { $('btnAnnotator').textContent = '标注人：' + (getAnnotator() || '未设置'); }
         function openAnnotatorModal(cb) {
             annotatorCallback = cb || null;
             $('annotatorInput').value = getAnnotator();
@@ -1228,506 +1163,246 @@
             if (e.key === 'Escape') closeAnnotatorModal();
         });
 
-        /* ---------- 导入补丁合并 ---------- */
-        $('btnImportPatch').addEventListener('click', () => $('patchInput').click());
+        // =========================================================
+        // 导出交卷模块 (纯数组格式输出)
+        // =========================================================
+        async function triggerExportZip() {
+            if (!getAnnotator()) { openAnnotatorModal(triggerExportZip); return; }
+            if (state.edits.size === 0) { alert('当前没有任何修改内容可以交卷。'); return; }
 
-        $('patchInput').addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
-            if (!files.length) return;
-            e.target.value = ''; // 清空 input，允许重复选同一个文件
-
-            if (state.data === null) {
-                alert('请先打开原始数据文件，再导入补丁！');
-                return;
-            }
-
-            let appliedCount = 0;
-            let skippedBounds = 0;
-            let errorFiles = [];
-
-            // 使用 for...of 保证按顺序应用
-            for (const file of files) {
-                const patch = await patchLib.readPatchFile(file);
-                if (patch.format === 'invalid') {
-                    errorFiles.push(`${file.name} (${patch.reason})`);
-                    continue;
-                }
-                const result = patchLib.applyPatchToState(patch, state);
-                appliedCount += result.applied;
-                skippedBounds += result.skipped_bounds;
-                if (result.conflict) {
-                    alert(`提示：文件 ${file.name} 中部分修改与之前的修改存在冲突，系统已自动保留最新导入的内容。`);
-                }
-            }
-
-            if (appliedCount > 0 || skippedBounds > 0) {
-                state.hasExported = false;
-                scheduleSave();
-                renderSidebar();
-                renderMain();
-                updateProgress();
-
-                let msg = `补丁导入完成！\n\n成功应用了 ${appliedCount} 处修改。`;
-                if (skippedBounds > 0) msg += `\n有 ${skippedBounds} 处修改因索引越界被跳过。`;
-                msg += `\n这些修改已经在页面上以绿色高亮显示，请核对。`;
-                if (errorFiles.length) {
-                    msg += `\n\n以下文件未能成功合并：\n` + errorFiles.map(e => `- ${e}`).join('\n');
-                }
-                alert(msg);
-            } else {
-                let msg = `未能应用任何修改。`;
-                if (errorFiles.length) {
-                    msg += `\n\n原因如下：\n` + errorFiles.map(e => `- ${e}`).join('\n');
-                }
-                alert(msg);
-            }
-        });
-
-        /* =========================================================
-         * 通用补丁处理库 patchLib
-         * 所有补丁文件经过 readPatchFile 归一化为 conversations 数组；
-         * 合并操作统一走 mergeConversationsArrays。
-         * ========================================================= */
-        const patchLib = {
-            sortObjectKeys(obj) {
-                // 递归对齐 Python 版 json.dumps(obj, sort_keys=True)
-                if (obj === null || typeof obj !== 'object') return obj;
-                if (Array.isArray(obj)) return obj.map(patchLib.sortObjectKeys);
-                const out = {};
-                Object.keys(obj).sort().forEach(k => { out[k] = patchLib.sortObjectKeys(obj[k]); });
-                return out;
-            },
-            convHash(conv) {
-                try { return JSON.stringify(patchLib.sortObjectKeys(conv)); }
-                catch (e) { return null; }
-            },
-
-            /** 解析补丁文件并归一化。
-             *  返回 { format, conversations, data_sig, warnings, reason }。
-             *  - format: 'sparse_edits' | 'recorded' | 'raw_array' | 'invalid'
-             *  - conversations: 归一化后的会话数组（sparse_edits 无法无中生有，返回 null）
-             */
-            async readPatchFile(file) {
-                try {
-                    const text = await file.text();  // 浏览器自动剥 BOM
-                    let data;
-                    try { data = JSON.parse(text); }
-                    catch (e) { return { format: 'invalid', conversations: null, reason: 'JSON 解析失败：' + e.message }; }
-
-                    // Format 1: 稀疏编辑 { edits: [{ conv_idx, msg_idx, content }] }
-                    if (data && !Array.isArray(data) && Array.isArray(data.edits)) {
-                        return { format: 'sparse_edits', conversations: null, edits: data.edits, reason: '' };
-                    }
-                    // Format 2: 带记录版 { data_sig?, conversations: [...] }
-                    if (data && !Array.isArray(data) && Array.isArray(data.conversations)) {
-                        const convs = data.conversations;
-                        if (!convs.length) return { format: 'invalid', conversations: null, reason: 'conversations 数组为空' };
-                        if (!convs[0] || typeof convs[0] !== 'object' || !Array.isArray(convs[0].messages)) {
-                            return { format: 'invalid', conversations: null, reason: 'conversations 元素缺少 messages 字段' };
-                        }
-                        return { format: 'recorded', conversations: convs, data_sig: data.data_sig || null, reason: '' };
-                    }
-                    // Format 3: 纯净数组 (patch_raw)
-                    if (Array.isArray(data)) {
-                        if (!data.length) return { format: 'invalid', conversations: null, reason: '空数组，无任何会话' };
-                        if (!data[0] || typeof data[0] !== 'object' || !Array.isArray(data[0].messages)) {
-                            return { format: 'invalid', conversations: null, reason: '数组元素缺少 messages 字段' };
-                        }
-                        return { format: 'raw_array', conversations: data, reason: '' };
-                    }
-                    return { format: 'invalid', conversations: null, reason: '无法识别的 JSON 结构（顶层既不是数组，也没有 edits/conversations 字段）' };
-                } catch (e) {
-                    return { format: 'invalid', conversations: null, reason: '读取失败：' + e.message };
-                }
-            },
-
-            /** 将 N 个会话数组合并为一个。
-             *  options: { dedup: boolean }
-             *  返回 { merged, perFile, totalRead, dupCount, badCount }。
-             */
-            mergeConversationsArrays(arrays, { dedup = true } = {}) {
-                const merged = [];
-                const seen = dedup ? new Set() : null;
-                const perFile = [];
-                let totalRead = 0, dupCount = 0, badCount = 0;
-
-                arrays.forEach(arr => {
-                    let added = 0, dup = 0, bad = 0;
-                    arr.forEach(conv => {
-                        if (!conv || typeof conv !== 'object' || !Array.isArray(conv.messages)) { bad++; return; }
-                        if (seen) {
-                            const h = patchLib.convHash(conv);
-                            if (h === null || seen.has(h)) { dup++; return; }
-                            seen.add(h);
-                        }
-                        merged.push(conv);
-                        added++;
-                    });
-                    perFile.push({ read: arr.length, added, dup, bad });
-                    totalRead += arr.length; dupCount += dup; badCount += bad;
-                });
-
-                return { merged, perFile, totalRead, dupCount, badCount };
-            },
-
-            /** 将补丁应用到 state.edits（标注状态）。
-             *  - sparse_edits: 直接按 conv_idx/msg_idx 写 state.edits
-             *  - recorded / raw_array: 按位置比对 messages.content 的差异
-             *  返回 { applied, conflict, skipped_bounds }。
-             *  调用前需保证 state.data 已加载。
-             */
-            applyPatchToState(patch, state) {
-                let applied = 0, conflict = false, skipped_bounds = 0;
-
-                if (patch.format === 'sparse_edits') {
-                    patch.edits.forEach(edit => {
-                        const { conv_idx, msg_idx, content } = edit;
-                        if (conv_idx >= 0 && conv_idx < state.data.length
-                                && msg_idx >= 0 && msg_idx < state.data[conv_idx].messages.length) {
-                            const k = keyOf(conv_idx, msg_idx);
-                            const orig = state.data[conv_idx].messages[msg_idx].content;
-                            if (content !== orig) {
-                                if (state.edits.has(k) && state.edits.get(k) !== content) conflict = true;
-                                state.edits.set(k, content);
-                                applied++;
-                            }
-                        } else {
-                            skipped_bounds++;
-                        }
-                    });
-                } else if (patch.conversations) {
-                    if (patch.format === 'recorded' && patch.data_sig
-                            && patch.data_sig !== state.dataSig) {
-                        // 调用方提前拦截
-                        return { applied: 0, conflict: false, skipped_bounds: 0, fingerprintMismatch: true };
-                    }
-                    patch.conversations.forEach((conv, ci) => {
-                        if (ci >= state.data.length) return;
-                        const origMessages = state.data[ci].messages;
-                        const newMessages = conv.messages;
-                        if (!newMessages) return;
-                        for (let mi = 0; mi < newMessages.length && mi < origMessages.length; mi++) {
-                            if (newMessages[mi].content !== origMessages[mi].content) {
-                                const k = keyOf(ci, mi);
-                                if (state.edits.has(k) && state.edits.get(k) !== newMessages[mi].content) conflict = true;
-                                state.edits.set(k, newMessages[mi].content);
-                                applied++;
-                            }
-                        }
-                    });
-                }
-                return { applied, conflict, skipped_bounds };
-            },
-        };
-
-        /* ---------- Raw Patches 合并模块（独立于 state，不影响标注） ---------- */
-        const mergeState = {
-            files: [],          // [{ file, name, size, valid, reason, convCount }]
-            merged: null,       // 合并后的数组
-            dedup: true,
-        };
-        function fmtSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-            if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
-            return (bytes / 1073741824).toFixed(2) + ' GB';
-        }
-        const FORMAT_LABEL = {
-            sparse_edits: '稀疏编辑',
-            recorded: '带记录',
-            raw_array: '纯净数组',
-            invalid: '无效',
-        };
-        function renderMergeFileList() {
-            const list = $('mergeFileList');
-            if (!mergeState.files.length) {
-                list.innerHTML = `<div style="color:var(--muted); font-size:.8rem; padding:20px; text-align:center;">尚未选择任何文件</div>`;
-                $('mergeDo').disabled = true;
-                $('mergeWarnings').style.display = 'none';
-                return;
-            }
-            let totalSize = 0, mergeableCount = 0, warnMsgs = [];
-            const items = mergeState.files.map((f, i) => {
-                totalSize += f.size;
-                const isMergeable = f.patch && f.patch.conversations && f.patch.conversations.length;
-                if (isMergeable) mergeableCount++;
-                const fmtLabel = f.patch ? FORMAT_LABEL[f.patch.format] || f.patch.format : '?';
-                let subText;
-                if (!f.patch) {
-                    subText = `${fmtSize(f.size)} · 校验中...`;
-                } else if (f.patch.format === 'invalid') {
-                    subText = `${fmtSize(f.size)} · ❌ ${escapeHTML(f.patch.reason)}`;
-                } else if (f.patch.format === 'sparse_edits') {
-                    subText = `${fmtSize(f.size)} · ℹ 稀疏编辑格式（无法直接合并为完整数组）`;
-                } else {
-                    subText = `${fmtSize(f.size)} · [${fmtLabel}] ${f.patch.conversations.length} 条会话`;
-                }
-                return `<div style="display:flex; align-items:center; gap:8px; padding:4px 2px; border-bottom:1px dashed var(--border);">` +
-                    `<span style="color:var(--muted); font-size:.72rem; width:18px;">${i + 1}</span>` +
-                    `<div style="flex:1; min-width:0;">` +
-                    `<div style="font-size:.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(f.name)}</div>` +
-                    `<div style="font-size:.72rem; color:${f.patch && f.patch.format === 'invalid' ? '#b91c1c' : 'var(--muted)'};">${subText}</div></div>` +
-                    `<button data-mi="${i}" style="border:none; background:none; color:#b91c1c; cursor:pointer; font-size:.9rem;" title="移除">×</button>` +
-                    `</div>`;
-            });
-            list.innerHTML = items.join('');
-            $('mergeDo').disabled = mergeableCount === 0;
-            mergeState.files.forEach(f => {
-                if (f.size > 200 * 1048576) warnMsgs.push(`⚠ 文件 ${escapeHTML(f.name)} 超过 200MB，浏览器合并时内存压力较大，建议分批处理`);
-            });
-            if (totalSize > 500 * 1048576) warnMsgs.push(`⚠ 已选文件总大小 ${fmtSize(totalSize)}，接近浏览器内存上限，强烈建议分批处理`);
-            if (warnMsgs.length) {
-                $('mergeWarnings').innerHTML = `<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:6px; padding:8px 12px; font-size:.78rem; color:#92400e;">` + warnMsgs.join('<br>') + `</div>`;
-                $('mergeWarnings').style.display = 'block';
-            } else {
-                $('mergeWarnings').style.display = 'none';
-            }
-            list.querySelectorAll('button[data-mi]').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const mi = Number(btn.dataset.mi);
-                    mergeState.files.splice(mi, 1);
-                    renderMergeFileList();
-                });
-            });
-        }
-
-        // 事件：打开合并面板
-        $('btnMergeRaw').addEventListener('click', () => {
-            mergeState.files = [];
-            mergeState.merged = null;
-            mergeState.dedup = $('mergeDedup').checked;
-            renderMergeFileList();
-            $('mergeProgress').textContent = '';
-            $('mergeModal').hidden = false;
-        });
-        $('mergeCancel').addEventListener('click', () => { $('mergeModal').hidden = true; });
-
-        // 事件：选择文件
-        $('mergeAddFiles').addEventListener('click', () => $('mergeFileInput').click());
-        $('mergeClearAll').addEventListener('click', () => { mergeState.files = []; renderMergeFileList(); });
-        $('mergeFileInput').addEventListener('change', async (e) => {
-            const files = Array.from(e.target.files);
-            e.target.value = '';
-            const pre = files.map(f => ({ file: f, name: f.name, size: f.size, patch: null }));
-            mergeState.files.push(...pre);
-            renderMergeFileList();
-            for (let i = mergeState.files.length - pre.length, j = 0; j < pre.length; i++, j++) {
-                $('mergeProgress').textContent = `正在校验 ${j + 1}/${pre.length}：${pre[j].name}`;
-                mergeState.files[i].patch = await patchLib.readPatchFile(pre[j].file);
-                renderMergeFileList();
-            }
-            $('mergeProgress').textContent = '校验完毕';
-        });
-        $('mergeDedup').addEventListener('change', () => { mergeState.dedup = $('mergeDedup').checked; });
-
-        // 事件：执行合并
-        $('mergeDo').addEventListener('click', async () => {
-            const mergeable = mergeState.files.filter(f => f.patch && f.patch.conversations);
-            if (!mergeable.length) return;
-            const dedup = mergeState.dedup;
-            $('mergeDo').disabled = true;
-            $('mergeProgress').textContent = `开始合并 ${mergeable.length} 个文件...`;
-
-            const arrays = [];
-            const perFile = [];
-            for (let i = 0; i < mergeable.length; i++) {
-                const f = mergeable[i];
-                $('mergeProgress').textContent = `处理 ${i + 1}/${mergeable.length}：${f.name}`;
-                arrays.push(f.patch.conversations);
-                perFile.push({ name: f.name, format: f.patch.format, read: f.patch.conversations.length });
-            }
-
-            const result = patchLib.mergeConversationsArrays(arrays, { dedup });
-
-            // 拼装带文件级统计的 perFile
-            let fi = 0;
-            const perFileWithStats = [];
-            result.perFile.forEach(stats => {
-                perFileWithStats.push({ ...perFile[fi], ...stats });
-                fi++;
-            });
-
-            mergeState.merged = result.merged;
-            $('mergeProgress').textContent = `合并完成，${result.merged.length} 条会话`;
-            $('mergeDo').disabled = false;
-
-            // 结果弹窗
-            const body = [];
-            body.push(`✅ 成功合并 <b>${mergeable.length}</b> 个文件，共读取 <b>${result.totalRead}</b> 条会话`);
-            if (dedup) {
-                body.push(`🔁 自动去重后保留 <b>${result.merged.length}</b> 条（重复 <b>${result.dupCount}</b> 条，损坏 <b>${result.badCount}</b> 条已跳过）`);
-            } else {
-                body.push(`🔁 保留 <b>${result.merged.length}</b> 条（损坏 <b>${result.badCount}</b> 条已跳过）`);
-            }
-            // 无法合并的文件（sparse_edits）也列出来
-            const rejected = mergeState.files.filter(f => f.patch && !f.patch.conversations && f.patch.format !== 'invalid');
-            if (rejected.length) {
-                body.push(`<span style="color:#b45309;">ℹ 以下 ${rejected.length} 个文件不适合直接合并为数组：</span>`);
-                rejected.forEach(f => {
-                    body.push(`• ${escapeHTML(f.name)}（${FORMAT_LABEL[f.patch.format]} 格式，需要原始数据文件配合才能合并）`);
-                });
-            }
-            const fileStatsHtml = perFileWithStats.map(p => {
-                const parts = [`${p.read} 条`];
-                if (dedup) parts.push(`新增 ${p.added}`, `重复 ${p.dup}${p.bad ? `，损坏 ${p.bad}` : ''}`);
-                else if (p.bad) parts.push(`损坏 ${p.bad}`);
-                return `<div>• ${escapeHTML(p.name)} <span style="color:var(--muted);">[${FORMAT_LABEL[p.format] || p.format}]</span>：${parts.join(' · ')}</div>`;
-            }).join('');
-            body.push(`<div style="margin-top:8px; font-size:.78rem; color:var(--muted);">${fileStatsHtml}</div>`);
-            $('mergeResultBody').innerHTML = body.join('<br>');
-            $('mergeResultTitle').textContent = result.merged.length ? '合并完成' : '合并结果为空';
-            $('mergeResultExport').disabled = !result.merged.length;
-            $('mergeModal').hidden = true;
-            $('mergeResultModal').hidden = false;
-        });
-
-        // 合并结果弹窗（关闭 / 导出）
-        $('mergeResultClose').addEventListener('click', () => {
-            $('mergeResultModal').hidden = true;
-            mergeState.merged = null;
-        });
-        $('mergeResultExport').addEventListener('click', async () => {
-            if (!mergeState.merged) return;
-            const payload = JSON.stringify(mergeState.merged, null, 2);
-            const blob = new Blob([payload], { type: 'application/json' });
-            const d = new Date();
-            const p2 = n => String(n).padStart(2, '0');
-            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const fname = `merged_patches_${ts}.json`;
-            if (window.showSaveFilePicker) {
-                try {
-                    const handle = await window.showSaveFilePicker({
-                        suggestedName: fname,
-                        types: [{ description: '合并后的补丁 JSON', accept: { 'application/json': ['.json'] } }],
-                    });
-                    const w = await handle.createWritable();
-                    await w.write(blob); await w.close();
-                    return;
-                } catch (err) { if (err && err.name === 'AbortError') return; }
-            }
-            const a = el('a');
-            a.href = URL.createObjectURL(blob); a.download = fname;
-            a.click(); URL.revokeObjectURL(a.href);
-        });
-
-        /* ---------- 导出逻辑 ---------- */
-        $('btnExportData').addEventListener('click', () => {
-            if (!getAnnotator()) {
-                openAnnotatorModal(() => { $('btnExportData').click(); });
-                return;
-            }
-            if (state.edits.size === 0) {
-                alert('当前没有任何修改内容可以导出。');
-                return;
-            }
-            $('chkExportFull').checked = true;
-            $('chkExportPatch').checked = true;
-            $('exportModal').hidden = false;
-        });
-
-        $('exportCancel').addEventListener('click', () => {
-            $('exportModal').hidden = true;
-        });
-
-        $('exportOk').addEventListener('click', () => {
-            const doFull = $('chkExportFull').checked;
-            const doPatch = $('chkExportPatch').checked;
-
-            if (!doFull && !doPatch) {
-                alert('请至少勾选一种导出格式！');
-                return;
-            }
-
-            $('exportModal').hidden = true;
-            executeExport(doFull, doPatch);
-        });
-
-        function executeExport(doFull, doPatch) {
             const annotator = getAnnotator();
             const d = new Date();
             const p2 = n => String(n).padStart(2, '0');
             const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-            const baseName = String(state.fileName || 'data').replace(/\.json$/i, '').replace(/[\\/:*?"<>|]/g, '_');
-            const safeAnnotator = String(annotator || 'unknown').replace(/[\\/:*?"<>|]/g, '_');
 
-            let downloadCount = 0;
-            let exportedFiles = [];
+            const baseName = String(state.fileName || 'data').replace(/\.json$/i, '');
+            const safeAnnotator = String(annotator).replace(/[\\/:*?"<>|]/g, '_');
+            const zipName = `${baseName}_${safeAnnotator}_${ts}.zip`;
 
-            if (doFull) {
-                const fullData = JSON.parse(JSON.stringify(state.data));
+            const zip = new JSZip();
+
+            // 1. 生成完整文件 (Full)
+            const fullData = JSON.parse(JSON.stringify(state.data));
+            state.edits.forEach((content, key) => {
+                const [ci, mi] = key.split(':').map(Number);
+                if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
+                    fullData[ci].messages[mi].content = content;
+                }
+            });
+            zip.file(`${baseName}_${safeAnnotator}_${ts}_完整版.json`, JSON.stringify(fullData, null, 2));
+
+            // 2. 生成修改补丁 (纯数组，不包含元数据，与原文件格式一致)
+            const modifiedConvIndices = new Set();
+            state.edits.forEach((content, key) => {
+                const [ci, mi] = key.split(':').map(Number);
+                if (Number.isInteger(ci)) modifiedConvIndices.add(ci);
+            });
+            const changesData = [];
+            modifiedConvIndices.forEach((ci) => {
+                if (ci < 0 || ci >= state.data.length) return;
+                const conv = JSON.parse(JSON.stringify(state.data[ci]));
                 state.edits.forEach((content, key) => {
-                    const [ci, mi] = key.split(':').map(Number);
-                    if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
-                        fullData[ci].messages[mi].content = content;
+                    const [editCi, editMi] = key.split(':').map(Number);
+                    if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
+                        conv.messages[editMi].content = content;
                     }
                 });
-                const blobFull = new Blob([JSON.stringify(fullData, null, 2)], { type: 'application/json' });
-                const fnameFull = `full_${baseName}_${safeAnnotator}_${ts}.json`;
-                triggerDownload(blobFull, fnameFull);
-                exportedFiles.push(fnameFull);
-                downloadCount++;
+                changesData.push(conv);
+            });
+
+            // 直接序列化数组
+            zip.file(`${baseName}_${safeAnnotator}_${ts}_补丁.json`, JSON.stringify(changesData, null, 2));
+
+            // 打包下载
+            try {
+                const blob = await zip.generateAsync({ type: "blob" });
+                triggerDownload(blob, zipName);
+                resetAfterExport();
+                alert(`✅ 成功交卷！\n\n系统已为您打包下载压缩包：\n${zipName}\n\n请将这个压缩包发给组长（或放入共享文件夹）。\n\n[提示] 交卷后，当前的修改痕迹已清空。`);
+            } catch (err) {
+                alert('打包失败：' + err.message);
             }
-
-            if (doPatch) {
-                const modifiedConvIndices = new Set();
-                state.edits.forEach((content, key) => {
-                    const [ci, mi] = key.split(':').map(Number);
-                    if (Number.isInteger(ci)) modifiedConvIndices.add(ci);
-                });
-
-                const changesData = [];
-                modifiedConvIndices.forEach((ci) => {
-                    if (ci < 0 || ci >= state.data.length) return;
-                    const conv = JSON.parse(JSON.stringify(state.data[ci]));
-                    state.edits.forEach((content, key) => {
-                        const [editCi, editMi] = key.split(':').map(Number);
-                        if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
-                            conv.messages[editMi].content = content;
-                        }
-                    });
-                    changesData.push(conv);
-                });
-
-                const payload = {
-                    source: state.fileName,
-                    data_sig: state.dataSig,
-                    annotator: annotator,
-                    exported_at: new Date().toISOString(),
-                    edit_count: changesData.length,
-                    conversations: changesData
-                };
-                const blobAudit = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-                const fnameAudit = `patch_audit_${baseName}_${safeAnnotator}_${ts}.json`;
-
-                const blobRaw = new Blob([JSON.stringify(changesData, null, 2)], { type: 'application/json' });
-                const fnameRaw = `patch_raw_${baseName}_${safeAnnotator}_${ts}.json`;
-
-                triggerDownload(blobAudit, fnameAudit);
-                setTimeout(() => triggerDownload(blobRaw, fnameRaw), 500);
-                exportedFiles.push(fnameAudit, fnameRaw);
-                downloadCount += 2;
-            }
-
-            resetAfterExport();
-
-            let msg = `已成功导出 ${downloadCount} 个文件！\n\n`;
-            exportedFiles.forEach(f => msg += `- ${f}\n`);
-            msg += `\n如果只看到了部分文件，请点击浏览器地址栏右侧的“允许下载多个文件”的提示。\n\n[提示] 导出成功后，当前页面的修改痕迹已清空，浏览器暂存已清理。`;
-            alert(msg);
         }
 
+        // =========================================================
+        // 合并工具模块 (Web 版 batch_merge.py，兼容纯数组)
+        // =========================================================
+        const mergeState = { origFile: null, origData: null, patchFiles: [], mergedResult: null };
+
+        function resetMergeModal() {
+            mergeState.origFile = null; mergeState.origData = null; mergeState.patchFiles = []; mergeState.mergedResult = null;
+            $('mergeOrigName').textContent = '未选择';
+            $('mergePatchesCount').textContent = '已选 0 个';
+            $('mergeToolLog').style.display = 'none';
+            $('btnMergeDo').disabled = true;
+        }
+
+        $('btnMergeTool').addEventListener('click', () => {
+            resetMergeModal();
+            $('mergeToolModal').hidden = false;
+        });
+        $('mergeToolCancel').addEventListener('click', () => { $('mergeToolModal').hidden = true; });
+
+        // 选择原文件
+        $('btnMergeSelectOrig').addEventListener('click', () => $('mergeOrigInput').click());
+        $('mergeOrigInput').addEventListener('change', e => {
+            const f = e.target.files[0];
+            if (!f) return;
+            mergeState.origFile = f;
+            $('mergeOrigName').textContent = f.name;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                try {
+                    mergeState.origData = JSON.parse(ev.target.result);
+                    checkMergeReady();
+                } catch (err) {
+                    alert('原文件不是合法 JSON');
+                    resetMergeModal();
+                }
+            };
+            reader.readAsText(f);
+            e.target.value = '';
+        });
+
+        // 选择补丁文件
+        $('btnMergeSelectPatches').addEventListener('click', () => $('mergePatchesInput').click());
+        $('mergePatchesInput').addEventListener('change', e => {
+            const files = Array.from(e.target.files);
+            if (!files.length) return;
+            mergeState.patchFiles.push(...files);
+            $('mergePatchesCount').textContent = `已选 ${mergeState.patchFiles.length} 个`;
+            checkMergeReady();
+            e.target.value = '';
+        });
+
+        function checkMergeReady() {
+            $('btnMergeDo').disabled = !(mergeState.origData && mergeState.patchFiles.length > 0);
+        }
+
+        // 执行合并
+        $('btnMergeDo').addEventListener('click', async () => {
+            if (!mergeState.origData || !mergeState.patchFiles.length) return;
+
+            $('btnMergeDo').disabled = true;
+            const logBox = $('mergeToolLog');
+            logBox.style.display = 'block';
+            logBox.innerHTML = '开始解析补丁包...';
+
+            const baseData = JSON.parse(JSON.stringify(mergeState.origData));
+            let appliedPatches = 0;
+            let totalChanges = 0;
+
+            for (const file of mergeState.patchFiles) {
+                try {
+                    if (file.name.endsWith('.zip')) {
+                        logBox.innerHTML += `<br>解压 ${file.name}...`;
+                        const zip = await JSZip.loadAsync(file);
+                        // 寻找 zip 内的补丁文件，兼容之前带的 audit/raw 命名
+                        const jsonFiles = Object.keys(zip.files).filter(name => name.endsWith('.json') && (name.includes('补丁') || name.includes('patch')));
+
+                        if (jsonFiles.length === 0) {
+                            logBox.innerHTML += `<br><span style="color:#b45309;">跳过：zip 内未找到补丁文件</span>`;
+                            continue;
+                        }
+
+                        for (const jName of jsonFiles) {
+                            const text = await zip.files[jName].async('string');
+                            const patch = JSON.parse(text);
+                            const changes = applyPatchToData(baseData, patch);
+                            totalChanges += changes;
+                            appliedPatches++;
+                        }
+                    } else if (file.name.endsWith('.json')) {
+                        logBox.innerHTML += `<br>读取 ${file.name}...`;
+                        const text = await file.text();
+                        const patch = JSON.parse(text);
+                        const changes = applyPatchToData(baseData, patch);
+                        totalChanges += changes;
+                        appliedPatches++;
+                    }
+                } catch (err) {
+                    logBox.innerHTML += `<br><span style="color:#b91c1c;">错误：${file.name} 解析失败 (${err.message})</span>`;
+                }
+            }
+
+            // 生成并下载
+            const d = new Date();
+            const p2 = n => String(n).padStart(2, '0');
+            const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+            const outName = `${mergeState.origFile.name.replace(/\.json$/i, '')}_合并完成_${ts}.json`;
+
+            const blob = new Blob([JSON.stringify(baseData, null, 2)], { type: 'application/json' });
+            triggerDownload(blob, outName);
+
+            logBox.innerHTML += `<br><br><b>✅ 合并完成！</b><br>成功应用了 ${appliedPatches} 个补丁，修改了 ${totalChanges} 处内容。<br>文件已下载。`;
+            $('btnMergeDo').disabled = false;
+        });
+
+        // 核心合并逻辑：兼容纯数组和带 conversations 的对象
+        function applyPatchToData(baseData, patch) {
+            let changes = 0;
+
+            // 兼容旧格式 (带 conversations 包装)
+            if (patch && !Array.isArray(patch) && patch.conversations && Array.isArray(patch.conversations)) {
+                patch.conversations.forEach((conv, ci) => {
+                    if (ci >= baseData.length) return;
+                    conv.messages.forEach((msg, mi) => {
+                        if (mi < baseData[ci].messages.length && msg.content !== baseData[ci].messages[mi].content) {
+                            baseData[ci].messages[mi].content = msg.content;
+                            changes++;
+                        }
+                    });
+                });
+                return changes;
+            }
+
+            // 纯数组格式 (新格式)
+            if (Array.isArray(patch)) {
+                patch.forEach(patchConv => {
+                    // 由于没有 conv_idx，需要智能特征匹配
+                    let matchedIndex = -1;
+                    for (let i = 0; i < baseData.length; i++) {
+                        const baseConv = baseData[i];
+                        // 匹配规则：system 内容相同，且 messages 长度相同，且 role 序列一致
+                        if (baseConv.messages.length === patchConv.messages.length &&
+                            baseConv.messages[0]?.content === patchConv.messages[0]?.content &&
+                            baseConv.messages.every((m, idx) => m.role === patchConv.messages[idx].role)) {
+
+                            // 如果匹配到多个，可以进一步检查 user 消息内容是否高度相似
+                            if (matchedIndex !== -1) {
+                                // 这是一个提示，但不阻断，直接覆盖最新的匹配项
+                                console.warn('发现多个匹配的会话，可能会覆盖错误的数据');
+                            }
+                            matchedIndex = i;
+                        }
+                    }
+
+                    if (matchedIndex !== -1) {
+                        // 覆盖整个对话对象，保留原有数据结构
+                        baseData[matchedIndex] = patchConv;
+                        changes++;
+                    } else {
+                        throw new Error('无法在原文件中找到与补丁内容匹配的会话，请检查原文件是否正确');
+                    }
+                });
+                return changes;
+            }
+
+            throw new Error('不支持的补丁格式');
+        }
+
+        // ----- 通用下载工具 -----
         function triggerDownload(blob, filename) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
+            a.href = url; a.download = filename;
             document.body.appendChild(a);
             a.click();
             a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
 
-        /* ---------- 事件绑定 ---------- */
+        // ----- 绑定全局事件 -----
         $('convList').addEventListener('click', e => {
             const item = e.target.closest('.conv-item');
             if (item) selectConv(Number(item.dataset.ci));
@@ -1736,39 +1411,27 @@
         updateAnnotatorUI();
         $('filter').addEventListener('change', renderSidebar);
 
-        (function () {
-            const p = new URLSearchParams(location.search).get('data');
-            if (!p) return;
-            fetch(p).then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            }).then(data => loadData(data, p.split('/').pop()))
-                .catch(err => alert('自动加载失败：' + err.message));
-        })();
-
         $('btnOpen').addEventListener('click', () => $('fileInput').click());
         $('fileInput').addEventListener('change', e => {
             const f = e.target.files[0];
             if (!f) return;
+            $('progressText').textContent = `正在加载 ${f.name}...`;
             const reader = new FileReader();
             reader.onload = () => {
                 try { loadData(JSON.parse(reader.result), f.name); }
-                catch (err) { alert('文件不是合法 JSON：' + err.message); }
+                catch (err) { alert('文件不是合法 JSON：' + err.message); updateProgress(); }
             };
             reader.readAsText(f);
             e.target.value = '';
         });
 
+        $('btnExportZip').addEventListener('click', triggerExportZip);
+
         window.addEventListener('beforeunload', () => {
-            if (state.data) {
-                if (state.edits.size > 0) {
-                    localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
-                } else {
-                    localStorage.removeItem(storageKey());
-                }
+            if (state.data && state.edits.size > 0) {
+                localStorage.setItem(storageKey(), JSON.stringify([...state.edits]));
             }
         });
-
     </script>
 </body>
 
