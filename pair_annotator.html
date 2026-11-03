@@ -943,18 +943,6 @@
                 turnCount++;
             }
 
-            // 底部追加按钮
-            const addCard = el('div', 'turn');
-            addCard.style.border = 'none';
-            addCard.style.background = 'transparent';
-            addCard.style.marginTop = '12px';
-            const addBtn = el('button', 'secondary');
-            addBtn.style = 'width: 100%; padding: 12px; border-style: dashed; border-color: var(--primary); color: var(--primary); font-weight: 600; background: var(--card);';
-            addBtn.textContent = '＋ 在末尾添加新轮次';
-            addBtn.addEventListener('click', () => insertTurn(ci, msgs.length));
-            addCard.append(addBtn);
-            main.append(addCard);
-
             main.querySelectorAll('textarea').forEach(autoResize);
             refreshHighlights();
             updateMatchUI();
@@ -976,7 +964,6 @@
                     origContent = m.__original_content;
                     isMod = m.content !== origContent;
                 } else {
-                    // 理论上不应发生，但从保底考虑，如果没标记就当未修改
                     isMod = false;
                 }
             } else {
@@ -1055,7 +1042,7 @@
         }
 
         function saveStructuralEdit(ci, newMsgs) {
-            // 【关键修复】给保留的旧消息打上原始内容标记，防止索引偏移导致误判已修改
+            // 给保留的旧消息打上原始内容标记，防止索引偏移导致误判已修改
             newMsgs.forEach(m => {
                 if (!m.__is_new && m.__original_content === undefined) {
                     m.__original_content = m.content;
