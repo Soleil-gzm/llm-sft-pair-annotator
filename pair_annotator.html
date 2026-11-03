@@ -966,13 +966,25 @@
             const k = keyOf(ci, mi);
 
             const isStructural = state.structuralEdits.has(ci);
-            const edited = isStructural ? m.content : state.edits.get(k);
+            let isMod = false;
+            let origContent = undefined;
 
-            // 对于新增的轮次，原始文件里是不存在的，所以原文为空
-            const origMessage = state.data[ci].messages[mi];
-            const origContent = origMessage ? origMessage.content : undefined;
-
-            const isMod = isStructural ? (origContent === undefined || edited !== origContent) : (edited !== undefined && edited !== origContent);
+            if (isStructural) {
+                if (m.__is_new) {
+                    isMod = true; // 新增的轮次本身就代表修改
+                } else if (m.__original_content !== undefined) {
+                    origContent = m.__original_content;
+                    isMod = m.content !== origContent;
+                } else {
+                    // 理论上不应发生，但从保底考虑，如果没标记就当未修改
+                    isMod = false;
+                }
+            } else {
+                const edited = state.edits.get(k);
+                const origMessage = state.data[ci].messages[mi];
+                origContent = origMessage ? origMessage.content : undefined;
+                isMod = edited !== undefined && edited !== origContent;
+            }
 
             const wrap = el('div', 'msg' + (isMod ? ' modified' : ''));
             wrap.dataset.key = k;
@@ -1003,7 +1015,7 @@
             }
 
             const ta = el('textarea');
-            ta.value = edited !== undefined ? edited : m.content;
+            ta.value = m.content; // 统一从 m 中取值
             ta.rows = 1;
             ta.addEventListener('input', () => { autoResize(ta); onEdit(ci, mi, ta, wrap); });
 
@@ -1032,11 +1044,9 @@
 
         function insertTurn(ci, insertIndex) {
             const msgs = [...getConvMessages(ci)];
-            // 边界保护
             if (insertIndex < 1) insertIndex = 1;
             if (insertIndex > msgs.length) insertIndex = msgs.length;
 
-            // 严格匹配格式：user 无 loss，assistant 带字符串 "True"
             const newUser = { role: 'user', content: '', __is_new: true };
             const newAsst = { role: 'assistant', content: '', loss: 'True', __is_new: true };
 
@@ -1045,6 +1055,13 @@
         }
 
         function saveStructuralEdit(ci, newMsgs) {
+            // 【关键修复】给保留的旧消息打上原始内容标记，防止索引偏移导致误判已修改
+            newMsgs.forEach(m => {
+                if (!m.__is_new && m.__original_content === undefined) {
+                    m.__original_content = m.content;
+                }
+            });
+
             state.structuralEdits.set(ci, newMsgs);
 
             // 清理该会话旧的文本修改记录，因为索引已变
@@ -1062,25 +1079,37 @@
         // ----- 文本编辑逻辑 -----
         function onEdit(ci, mi, ta, wrap) {
             const msgs = getConvMessages(ci);
-            const origMessage = state.data[ci].messages[mi];
-            const orig = origMessage ? origMessage.content : undefined;
+            const m = msgs[mi];
 
             const isStructural = state.structuralEdits.has(ci);
-            const isMod = isStructural ? (orig === undefined || ta.value !== orig) : (ta.value !== orig);
 
             if (isStructural) {
-                msgs[mi].content = ta.value;
+                m.content = ta.value;
                 state.structuralEdits.set(ci, msgs);
             } else {
+                const origMessage = state.data[ci].messages[mi];
+                const orig = origMessage ? origMessage.content : undefined;
                 const k = keyOf(ci, mi);
                 if (ta.value !== orig) state.edits.set(k, ta.value);
                 else state.edits.delete(k);
             }
 
+            // 重新计算 isMod
+            let isMod = false;
+            if (m.__is_new) isMod = true;
+            else if (m.__original_content !== undefined) isMod = m.content !== m.__original_content;
+            else if (!isStructural) {
+                const orig = state.data[ci].messages[mi]?.content;
+                isMod = ta.value !== orig;
+            }
+
             state.hasExported = false;
             wrap.classList.toggle('modified', isMod);
+
+            const origForHighlight = m.__original_content !== undefined ? m.__original_content : (state.data[ci].messages[mi]?.content);
             const hl = wrap.querySelector('.backdrop .hl');
-            if (hl) hl.innerHTML = renderBackdropHTML(ta.value, orig, search.q);
+            if (hl) hl.innerHTML = renderBackdropHTML(ta.value, origForHighlight, search.q);
+
             refreshSidebarItem(ci);
             updateProgress();
             scheduleSave();
@@ -1157,7 +1186,9 @@
                 const hl = wrap.querySelector('.backdrop .hl');
                 if (ta && hl) {
                     const [ci, mi] = wrap.dataset.key.split(':').map(Number);
-                    const orig = state.data[ci]?.messages[mi]?.content;
+                    const msgs = getConvMessages(ci);
+                    const m = msgs[mi];
+                    const orig = m.__original_content !== undefined ? m.__original_content : state.data[ci]?.messages[mi]?.content;
                     hl.innerHTML = renderBackdropHTML(ta.value, orig, q);
                 }
             });
@@ -1366,6 +1397,7 @@
             return msgs.map(m => {
                 const copy = { ...m };
                 delete copy.__is_new;
+                delete copy.__original_content;
                 return copy;
             });
         }
