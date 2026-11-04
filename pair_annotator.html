@@ -343,6 +343,24 @@
             cursor: not-allowed;
         }
 
+        /* 自定义增删撤销/重做按钮样式 */
+        .btn-action-struct {
+            margin-left: 8px;
+            padding: 3px 8px;
+            font-size: .78rem;
+            background: var(--primary);
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .btn-action-struct:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
         .sys-card,
         .turn {
             background: var(--card);
@@ -658,13 +676,76 @@
     </div>
 
     <script>
+        // =========================================================
+        // IndexedDB 存储封装 (取代原有的 localStorage)
+        // =========================================================
+        const DB_NAME = 'PairAnnotatorDB';
+        const STORE_NAME = 'editsStore';
+
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, 1);
+                request.onupgradeneeded = e => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME);
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function idbSet(key, value) {
+            try {
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    const req = store.put(value, key);
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                console.error('IndexedDB 保存失败', e);
+            }
+        }
+
+        async function idbGet(key) {
+            try {
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readonly');
+                    const store = tx.objectStore(STORE_NAME);
+                    const req = store.get(key);
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function idbDelete(key) {
+            try {
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_NAME, 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    const req = store.delete(key);
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) { }
+        }
+
         // ----- 核心状态 -----
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
-            edits: new Map(),             // 普通文本修改 "ci:mi" -> content
-            structuralEdits: new Map(),   // 结构性修改 ci -> 修改后的整个 messages 数组
-            undoStacks: new Map(),        // 撤销快照栈 ci -> [ messages_snapshot, ... ]
-            redoStacks: new Map(),        // 重做快照栈 ci -> [ messages_snapshot, ... ]
+            edits: new Map(),
+            structuralEdits: new Map(),
+            undoStacks: new Map(),
+            redoStacks: new Map(),
             current: -1,
             searchText: null,
             lastBatch: null,
@@ -702,7 +783,7 @@
             return errors;
         }
 
-        function loadData(data, fileName) {
+        async function loadData(data, fileName) {
             const errors = validateData(data);
             if (errors.length) {
                 alert('数据结构校验未通过，共 ' + errors.length + ' 处问题：\n' + errors.slice(0, 10).join('\n') + (errors.length > 10 ? '\n...' : ''));
@@ -726,7 +807,10 @@
             search.q = ''; search.matches = []; search.cur = -1;
             state.hasExported = false;
 
-            restoreEdits();
+            // 异步恢复本地暂存
+            $('progressText').textContent = `正在恢复本地暂存...`;
+            await restoreEdits();
+
             $('filter').disabled = false;
             $('btnExportZip').disabled = false;
             renderSidebar();
@@ -734,28 +818,28 @@
             updateProgress();
         }
 
-        // ----- 本地暂存 -----
+        // ----- 本地暂存 (基于 IndexedDB) -----
         function storageKey() { return `pair_annotator:${state.fileName}:${state.data.length}:${state.totalMsgs}`; }
         let saveTimer = null;
         function scheduleSave() {
             clearTimeout(saveTimer);
             if (state.hasExported) return;
-            saveTimer = setTimeout(() => {
+            saveTimer = setTimeout(async () => {
+                const dataToSave = {
+                    edits: [...state.edits],
+                    structuralEdits: [...state.structuralEdits]
+                };
                 if (state.edits.size > 0 || state.structuralEdits.size > 0) {
-                    localStorage.setItem(storageKey(), JSON.stringify({
-                        edits: [...state.edits],
-                        structuralEdits: [...state.structuralEdits]
-                    }));
+                    await idbSet(storageKey(), dataToSave);
                 } else {
-                    localStorage.removeItem(storageKey());
+                    await idbDelete(storageKey());
                 }
             }, 300);
         }
-        function restoreEdits() {
+        async function restoreEdits() {
             try {
-                const raw = localStorage.getItem(storageKey());
-                if (raw) {
-                    const parsed = JSON.parse(raw);
+                const parsed = await idbGet(storageKey());
+                if (parsed) {
                     state.edits = new Map(parsed.edits || []);
                     state.structuralEdits = new Map(parsed.structuralEdits || []);
                 }
@@ -769,7 +853,7 @@
             state.undoStacks.clear();
             state.redoStacks.clear();
             state.lastBatch = null;
-            localStorage.removeItem(storageKey());
+            idbDelete(storageKey()); // 异步清空数据
             const ri = $('replaceInput');
             if (ri) ri.value = '';
             renderSidebar();
@@ -780,7 +864,7 @@
         // ----- 侧栏渲染 -----
         function convEditCount(ci) {
             let n = 0;
-            if (state.structuralEdits.has(ci)) return 1; // 结构变了视为有一处修改
+            if (state.structuralEdits.has(ci)) return 1;
             for (const k of state.edits.keys()) if (Number(k.split(':')[0]) === ci) n++;
             return n;
         }
@@ -877,19 +961,14 @@
             const undoStack = state.undoStacks.get(ci) || [];
             const redoStack = state.redoStacks.get(ci) || [];
 
-            const btnUndoStruct = el('button', 'secondary');
-            btnUndoStruct.style.marginLeft = '8px';
-            btnUndoStruct.style.color = undoStack.length ? 'var(--primary)' : '';
-            btnUndoStruct.style.borderColor = undoStack.length ? 'var(--primary)' : '';
+            const btnUndoStruct = el('button', 'btn-action-struct');
             btnUndoStruct.textContent = undoStack.length ? `↶ 撤销增删 (${undoStack.length})` : `↶ 撤销增删`;
             btnUndoStruct.disabled = undoStack.length === 0;
             btnUndoStruct.title = '撤销当前会话的最近一次增删操作';
             btnUndoStruct.addEventListener('click', () => undoStructuralChange(ci));
 
-            const btnRedoStruct = el('button', 'secondary');
+            const btnRedoStruct = el('button', 'btn-action-struct');
             btnRedoStruct.style.marginLeft = '4px';
-            btnRedoStruct.style.color = redoStack.length ? 'var(--primary)' : '';
-            btnRedoStruct.style.borderColor = redoStack.length ? 'var(--primary)' : '';
             btnRedoStruct.textContent = redoStack.length ? `↷ 重做增删 (${redoStack.length})` : `↷ 重做增删`;
             btnRedoStruct.disabled = redoStack.length === 0;
             btnRedoStruct.title = '重做当前会话的最近一次撤销操作';
@@ -1050,28 +1129,20 @@
         function autoResize(ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
 
         // ----- 结构修改与撤销/重做逻辑 -----
-
-        // 在增删前保存快照
         function saveUndoSnapshot(ci) {
             if (!state.undoStacks.has(ci)) state.undoStacks.set(ci, []);
             const stack = state.undoStacks.get(ci);
-
-            // 获取当前完整的 messages
             const msgs = getConvMessages(ci);
             const snapshot = JSON.parse(JSON.stringify(msgs));
             stack.push(snapshot);
-
-            // 只要有新操作，重做栈就失效
             state.redoStacks.delete(ci);
         }
 
         function applyMsgsSnapshot(ci, msgsSnapshot) {
-            // 清理由于结构变化而被清空的旧文本修改
             for (const key of [...state.edits.keys()]) {
                 if (Number(key.split(':')[0]) === ci) state.edits.delete(key);
             }
 
-            // 检查是否退回到初始状态
             const origMsgs = state.data[ci].messages;
             let isOriginal = false;
             if (msgsSnapshot.length === origMsgs.length) {
@@ -1095,12 +1166,10 @@
             const undoStack = state.undoStacks.get(ci);
             if (!undoStack || undoStack.length === 0) return;
 
-            // 将当前状态压入重做栈
             if (!state.redoStacks.has(ci)) state.redoStacks.set(ci, []);
             const currentMsgs = getConvMessages(ci);
             state.redoStacks.get(ci).push(JSON.parse(JSON.stringify(currentMsgs)));
 
-            // 从撤销栈弹出并应用
             const prevMsgs = undoStack.pop();
             applyMsgsSnapshot(ci, prevMsgs);
         }
@@ -1109,12 +1178,10 @@
             const redoStack = state.redoStacks.get(ci);
             if (!redoStack || redoStack.length === 0) return;
 
-            // 将当前状态压入撤销栈
             if (!state.undoStacks.has(ci)) state.undoStacks.set(ci, []);
             const currentMsgs = getConvMessages(ci);
             state.undoStacks.get(ci).push(JSON.parse(JSON.stringify(currentMsgs)));
 
-            // 从重做栈弹出并应用
             const nextMsgs = redoStack.pop();
             applyMsgsSnapshot(ci, nextMsgs);
         }
@@ -1125,7 +1192,7 @@
             if (!confirm('确定要删除这一轮对话吗？（包含 user 提问和 assistant 回答）')) return;
 
             saveUndoSnapshot(ci);
-            msgs.splice(mi, 2); // 删除 user 和 assistant
+            msgs.splice(mi, 2);
             saveStructuralEdit(ci, msgs);
         }
 
@@ -1143,7 +1210,6 @@
         }
 
         function saveStructuralEdit(ci, newMsgs) {
-            // 给保留的旧消息打上原始内容标记，防止索引偏移导致误判已修改
             newMsgs.forEach(m => {
                 if (!m.__is_new && m.__original_content === undefined) {
                     m.__original_content = m.content;
@@ -1152,7 +1218,6 @@
 
             state.structuralEdits.set(ci, newMsgs);
 
-            // 清理该会话旧的文本修改记录，因为索引已变
             for (const key of [...state.edits.keys()]) {
                 if (Number(key.split(':')[0]) === ci) state.edits.delete(key);
             }
@@ -1182,7 +1247,6 @@
                 else state.edits.delete(k);
             }
 
-            // 重新计算 isMod
             let isMod = false;
             if (m.__is_new) isMod = true;
             else if (m.__original_content !== undefined) isMod = m.content !== m.__original_content;
@@ -1375,10 +1439,18 @@
             t.textContent = text; setTimeout(() => { t.textContent = old; }, 2200);
         }
         function doBatchReplace() {
-            const q = search.q;
+            const si = $('mainSearch');
+            const q = si ? si.value : ''; // 核心修复：直接取输入框的值，防止防抖导致未同步
+            if (!q) { flashMsg('请先在搜索框输入要查找的关键词'); return; }
+
             const replacement = $('replaceInput') ? $('replaceInput').value : '';
-            if (!q) { flashMsg('请先在搜索框输入关键词'); return; }
             if (replacement === '') { flashMsg('请在「替换为」框里填新内容'); return; }
+
+            // 如果当前关键字还没同步到全局状态，先同步一下（顺便刷新界面高亮）
+            if (q !== search.q) {
+                doSearch(true);
+            }
+
             const hits = scanBatchReplace(q, replacement);
             if (!hits.length) { flashMsg('没有匹配项'); return; }
 
@@ -1399,7 +1471,6 @@
         $('replaceOk') && $('replaceOk').addEventListener('click', () => {
             if (!batchPending) return;
             const { hits } = batchPending;
-            const undoEntries = [];
             hits.forEach(({ ci, mi, old, new: rep }) => {
                 const msgs = getConvMessages(ci);
                 const orig = state.data[ci].messages[mi] ? state.data[ci].messages[mi].content : undefined;
@@ -1479,8 +1550,6 @@
         // =========================================================
         // 数据清理与导出交卷
         // =========================================================
-
-        // 深度清理内部标记，保证导出干净
         function cleanForExport(msgs) {
             return msgs.map(m => {
                 const copy = { ...m };
@@ -1507,13 +1576,11 @@
 
             // 1. 生成完整文件 (Full)
             const fullData = JSON.parse(JSON.stringify(state.data));
-            // 先应用结构修改
             state.structuralEdits.forEach((msgs, ci) => {
                 if (ci >= 0 && ci < fullData.length) {
                     fullData[ci].messages = cleanForExport(msgs);
                 }
             });
-            // 再应用文本修改
             state.edits.forEach((content, key) => {
                 const [ci, mi] = key.split(':').map(Number);
                 if (ci >= 0 && ci < fullData.length && mi >= 0 && mi < fullData[ci].messages.length) {
@@ -1522,7 +1589,7 @@
             });
             zip.file(`${baseName}_${safeAnnotator}_${ts}_完整版.json`, JSON.stringify(fullData, null, 2));
 
-            // 2. 生成修改补丁 (纯数组，兼容结构修改)
+            // 2. 生成修改补丁
             const modifiedConvIndices = new Set([
                 ...[...state.edits.keys()].map(k => Number(k.split(':')[0])),
                 ...state.structuralEdits.keys()
@@ -1533,12 +1600,10 @@
                 if (ci < 0 || ci >= state.data.length) return;
                 const conv = JSON.parse(JSON.stringify(state.data[ci]));
 
-                // 若有结构修改，直接使用新的 messages 并清理标记
                 if (state.structuralEdits.has(ci)) {
                     conv.messages = cleanForExport(state.structuralEdits.get(ci));
                 }
 
-                // 应用该会话的文本修改
                 state.edits.forEach((content, key) => {
                     const [editCi, editMi] = key.split(':').map(Number);
                     if (editCi === ci && editMi >= 0 && editMi < conv.messages.length) {
@@ -1550,7 +1615,6 @@
 
             zip.file(`${baseName}_${safeAnnotator}_${ts}_补丁.json`, JSON.stringify(changesData, null, 2));
 
-            // 打包下载
             try {
                 const blob = await zip.generateAsync({ type: "blob" });
                 triggerDownload(blob, zipName);
@@ -1689,8 +1753,10 @@
             if (!f) return;
             $('progressText').textContent = `正在加载 ${f.name}...`;
             const reader = new FileReader();
-            reader.onload = () => {
-                try { loadData(JSON.parse(reader.result), f.name); }
+            reader.onload = async () => {
+                try {
+                    await loadData(JSON.parse(reader.result), f.name);
+                }
                 catch (err) { alert('文件不是合法 JSON：' + err.message); updateProgress(); }
             };
             reader.readAsText(f);
@@ -1701,10 +1767,10 @@
 
         window.addEventListener('beforeunload', () => {
             if (state.data && (state.edits.size > 0 || state.structuralEdits.size > 0)) {
-                localStorage.setItem(storageKey(), JSON.stringify({
+                idbSet(storageKey(), {
                     edits: [...state.edits],
                     structuralEdits: [...state.structuralEdits]
-                }));
+                });
             }
         });
     </script>
