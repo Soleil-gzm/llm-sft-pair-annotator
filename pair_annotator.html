@@ -5,7 +5,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>话术微调标注工具</title>
-    <!-- 引入 JSZip 用于打包导出和解压 -->
+    <!--
+        JSZip 依赖（阶段 0 保留 CDN）。
+        若要完全离线（内网/无外网环境），请下载 jszip.min.js（3.10.1），
+        把下面这一行整段替换为：
+            <script>/* 粘贴 jszip.min.js 全文 */</script>
+        代码其余部分无需改动，脚本会自动识别并启用导出/合并功能。
+    -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         :root {
@@ -329,6 +335,7 @@
             cursor: pointer;
         }
 
+        /* 保留 btn-undo 样式：阶段 1 恢复「撤销上一批」时直接复用 */
         .replace-group .btn-undo {
             background: #fff;
             color: #b91c1c;
@@ -677,6 +684,11 @@
 
     <script>
         // =========================================================
+        // 依赖可用性检测（JSZip 未加载时禁用导出/合并，给出明确提示）
+        // =========================================================
+        const JSZIP_OK = typeof JSZip !== 'undefined';
+
+        // =========================================================
         // IndexedDB 存储封装 (取代原有的 localStorage)
         // =========================================================
         const DB_NAME = 'PairAnnotatorDB';
@@ -740,6 +752,7 @@
         }
 
         // ----- 核心状态 -----
+        // 阶段 0：移除 lastBatch（「撤销上一批」暂时下线，阶段 1 统一状态模型后再恢复）
         const state = {
             data: null, fileName: '', totalMsgs: 0, dataSig: '',
             edits: new Map(),
@@ -748,7 +761,6 @@
             redoStacks: new Map(),
             current: -1,
             searchText: null,
-            lastBatch: null,
             hasExported: false,
         };
         const search = { q: '', matches: [], cur: -1 };
@@ -812,7 +824,8 @@
             await restoreEdits();
 
             $('filter').disabled = false;
-            $('btnExportZip').disabled = false;
+            // 阶段 0：导出依赖 JSZip，未加载时保持禁用
+            $('btnExportZip').disabled = !JSZIP_OK;
             renderSidebar();
             selectConv(0);
             updateProgress();
@@ -852,7 +865,6 @@
             state.structuralEdits.clear();
             state.undoStacks.clear();
             state.redoStacks.clear();
-            state.lastBatch = null;
             idbDelete(storageKey()); // 异步清空数据
             const ri = $('replaceInput');
             if (ri) ri.value = '';
@@ -951,10 +963,8 @@
             ri.addEventListener('keydown', e => { if (e.key === 'Enter') doBatchReplace(); });
             const bRep = el('button', 'btn-replace'); bRep.textContent = '批量替换';
             bRep.addEventListener('click', doBatchReplace);
-            const bUndo = el('button', 'btn-undo'); bUndo.textContent = '↶ 撤销上一批';
-            bUndo.disabled = !state.lastBatch;
-            bUndo.addEventListener('click', undoLastBatch);
-            rg.append(ri, bRep, bUndo);
+            // 阶段 0：「撤销上一批」已移除，阶段 1 统一状态模型后再恢复
+            rg.append(ri, bRep);
             sg.append(rg);
 
             // 撤销/重做增删按钮
@@ -1501,24 +1511,6 @@
             batchPending = null;
             $('replaceModal').hidden = true;
         });
-        function undoLastBatch() {
-            if (!state.lastBatch) return;
-            state.lastBatch.forEach(([k, old, had]) => {
-                const [ci, mi] = k.split(':').map(Number);
-                if (state.structuralEdits.has(ci)) return;
-                const orig = state.data[ci].messages[mi].content;
-                if (old === orig) state.edits.delete(k);
-                else state.edits.set(k, old);
-            });
-            state.lastBatch = null;
-            renderMain();
-            buildSearchText();
-            search.matches = computeMatches(search.q);
-            refreshHighlights();
-            updateProgress();
-            renderSidebar();
-            scheduleSave();
-        }
 
         // ----- 标注人管理 -----
         let annotatorCallback = null;
@@ -1560,6 +1552,11 @@
         }
 
         async function triggerExportZip() {
+            // 阶段 0：依赖 JSZip
+            if (!JSZIP_OK) {
+                alert('导出功能不可用：JSZip 未加载。\n请检查网络后刷新页面，或联系管理员改用离线版本。');
+                return;
+            }
             if (!getAnnotator()) { openAnnotatorModal(triggerExportZip); return; }
             if (state.edits.size === 0 && state.structuralEdits.size === 0) { alert('当前没有任何修改内容可以交卷。'); return; }
 
@@ -1575,11 +1572,13 @@
             const zip = new JSZip();
 
             // 1. 生成完整文件 (Full)
-            const fullData = JSON.parse(JSON.stringify(state.data));
-            state.structuralEdits.forEach((msgs, ci) => {
-                if (ci >= 0 && ci < fullData.length) {
-                    fullData[ci].messages = cleanForExport(msgs);
-                }
+            // 阶段 0：改用「原会话浅拷贝 + cleanForExport」构建，
+            // 切断对 state.data 消息对象的引用，保证内部字段（__is_new / __original_content）不会泄漏到导出文件。
+            const fullData = state.data.map((conv, ci) => {
+                const msgs = state.structuralEdits.has(ci)
+                    ? state.structuralEdits.get(ci)
+                    : conv.messages;
+                return { ...conv, messages: cleanForExport(msgs) };
             });
             state.edits.forEach((content, key) => {
                 const [ci, mi] = key.split(':').map(Number);
@@ -1598,11 +1597,11 @@
             const changesData = [];
             modifiedConvIndices.forEach((ci) => {
                 if (ci < 0 || ci >= state.data.length) return;
-                const conv = JSON.parse(JSON.stringify(state.data[ci]));
-
-                if (state.structuralEdits.has(ci)) {
-                    conv.messages = cleanForExport(state.structuralEdits.get(ci));
-                }
+                const conv = { ...state.data[ci] };
+                const msgs = state.structuralEdits.has(ci)
+                    ? state.structuralEdits.get(ci)
+                    : state.data[ci].messages;
+                conv.messages = cleanForExport(msgs);
 
                 state.edits.forEach((content, key) => {
                     const [editCi, editMi] = key.split(':').map(Number);
@@ -1638,6 +1637,10 @@
         }
 
         $('btnMergeTool').addEventListener('click', () => {
+            if (!JSZIP_OK) {
+                alert('合并功能不可用：JSZip 未加载。\n请检查网络后刷新页面，或联系管理员改用离线版本。');
+                return;
+            }
             resetMergeModal();
             $('mergeToolModal').hidden = false;
         });
@@ -1655,26 +1658,31 @@
 
         $('btnMergeDo').addEventListener('click', async () => {
             if (!mergeState.patchFiles.length) return;
+            if (!JSZIP_OK) { alert('合并功能不可用：JSZip 未加载。请检查网络后刷新页面。'); return; }
 
             $('btnMergeDo').disabled = true;
             const logBox = $('mergeToolLog');
             logBox.style.display = 'block';
             logBox.innerHTML = '开始解析文件...';
+            // 阶段 0：appendLog 使用 insertAdjacentHTML，避免每次累加重解析大段 HTML；
+            // 同时所有外部字符串（文件名、错误信息）统一经 escapeHTML 转义，杜绝 XSS。
+            const appendLog = html => logBox.insertAdjacentHTML('beforeend', html);
 
             const isDedup = $('mergeDedup').checked;
             let mergedArray = [];
 
             for (const file of mergeState.patchFiles) {
+                const fname = escapeHTML(String(file.name));
                 try {
                     let fileArrays = [];
 
                     if (file.name.endsWith('.zip')) {
-                        logBox.innerHTML += `<br>解压 ${file.name}...`;
+                        appendLog(`<br>解压 ${fname}...`);
                         const zip = await JSZip.loadAsync(file);
                         const jsonFiles = Object.keys(zip.files).filter(name => name.endsWith('.json') && (name.includes('补丁') || name.includes('patch')));
 
                         if (jsonFiles.length === 0) {
-                            logBox.innerHTML += `<br><span style="color:#b45309;">跳过：压缩包内未找到补丁文件</span>`;
+                            appendLog(`<br><span style="color:#b45309;">跳过：压缩包内未找到补丁文件</span>`);
                             continue;
                         }
 
@@ -1684,7 +1692,7 @@
                             fileArrays.push(Array.isArray(data) ? data : (data.conversations || []));
                         }
                     } else if (file.name.endsWith('.json')) {
-                        logBox.innerHTML += `<br>读取 ${file.name}...`;
+                        appendLog(`<br>读取 ${fname}...`);
                         const text = await file.text();
                         const data = JSON.parse(text);
                         fileArrays.push(Array.isArray(data) ? data : (data.conversations || []));
@@ -1696,13 +1704,14 @@
                         }
                     }
                 } catch (err) {
-                    logBox.innerHTML += `<br><span style="color:#b91c1c;">错误：${file.name} 解析失败 (${err.message})</span>`;
+                    const errMsg = escapeHTML(String((err && err.message) || err));
+                    appendLog(`<br><span style="color:#b91c1c;">错误：${fname} 解析失败 (${errMsg})</span>`);
                 }
             }
 
             const originalCount = mergedArray.length;
             if (isDedup) {
-                logBox.innerHTML += `<br>正在去重...`;
+                appendLog(`<br>正在去重...`);
                 const seen = new Set();
                 const uniqueArray = [];
                 for (const item of mergedArray) {
@@ -1713,7 +1722,7 @@
                     }
                 }
                 mergedArray = uniqueArray;
-                logBox.innerHTML += `<br>去重完成，移除了 ${originalCount - mergedArray.length} 条重复数据。`;
+                appendLog(`<br>去重完成，移除了 ${originalCount - mergedArray.length} 条重复数据。`);
             }
 
             const d = new Date();
@@ -1724,7 +1733,7 @@
             const blob = new Blob([JSON.stringify(mergedArray, null, 2)], { type: 'application/json' });
             triggerDownload(blob, outName);
 
-            logBox.innerHTML += `<br><br><b>✅ 合并完成！</b><br>共拼接了 ${originalCount} 条会话，最终保留 ${mergedArray.length} 条。<br>文件已下载。`;
+            appendLog(`<br><br><b>✅ 合并完成！</b><br>共拼接了 ${originalCount} 条会话，最终保留 ${mergedArray.length} 条。<br>文件已下载。`);
             $('btnMergeDo').disabled = false;
         });
 
@@ -1746,6 +1755,14 @@
         $('btnAnnotator').addEventListener('click', () => openAnnotatorModal(null));
         updateAnnotatorUI();
         $('filter').addEventListener('change', renderSidebar);
+
+        // 阶段 0：JSZip 加载失败时的全局降级提示
+        if (!JSZIP_OK) {
+            $('btnMergeTool').disabled = true;
+            $('btnMergeTool').title = 'JSZip 未加载（可能无网络），合并功能不可用';
+            $('btnExportZip').title = 'JSZip 未加载（可能无网络），导出功能不可用';
+            $('progressText').textContent = '⚠ JSZip 未加载：导出与合并不可用，浏览/编辑功能正常';
+        }
 
         $('btnOpen').addEventListener('click', () => $('fileInput').click());
         $('fileInput').addEventListener('change', e => {
